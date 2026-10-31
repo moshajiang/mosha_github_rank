@@ -18,6 +18,7 @@ from .identity import workspace_id
 from .repositories import repository_items, resolve_repository, overrides_by_repo, apply_override, canonical_resource
 from .scheduler import scheduler_status
 from .agent_resources import enrich_resource, resource_items, resource_catalog, duplicate_key, with_duplicates
+from .news_events import news_catalog, news_detail as get_news_detail
 
 
 def create_app(settings=None):
@@ -182,42 +183,32 @@ def create_app(settings=None):
     def news(window: Literal["24h", "7d", "30d", "all"] = "7d", topic: str = "", source: str = "",
              sort: Literal["latest", "important"] = "latest", q: str = Query("", max_length=200),
              limit: int = Query(100, ge=1, le=500)):
-        hours = {"24h": 24, "7d": 168, "30d": 720, "all": None}[window]
-        now = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(hours=hours)).isoformat(timespec="seconds") if hours else None
-        groups, unknown = {}, []
-        for row in db.rows("SELECT * FROM news ORDER BY published_at DESC,first_seen_at DESC"):
-            item = {**json.loads(row["data"]), "first_seen_at": row["first_seen_at"], "fetched_at": row["fetched_at"]}
-            if topic and item["topic"] != topic or source and item["source_id"] != source or q.lower() not in (item["title"] + " " + item["summary"]).lower():
-                continue
-            if not row["published_at"]:
-                unknown.append(item)
-                continue
-            if window == "24h" and item.get("published_precision") == "day":
-                unknown.append({**item, "time_note": "来源仅提供日期，不进入精确 24 小时窗口"})
-                continue
-            published = datetime.fromisoformat(row["published_at"].replace("Z", "+00:00"))
-            if published > now + timedelta(minutes=5) or cutoff and published < datetime.fromisoformat(cutoff):
-                continue
-            if row["event_key"] in groups:
-                groups[row["event_key"]]["related_reports"].append({"title": item["title"], "url": item["url"], "source_name": item["source_name"]})
-            else:
-                groups[row["event_key"]] = {**item, "related_reports": []}
-        items = list(groups.values())
-        items.sort(key=lambda r: ((r["importance"] if sort == "important" else 0), r["published_at"]), reverse=True)
-        return {"items": annotate_summaries(db, items[:limit], "news"), "total": len(items), "unknown_time": annotate_summaries(db, unknown[:limit], "news"),
-                "unknown_time_total": len(unknown), "as_of": utcnow(), "window": window,
-                "note": "按原始发布时间筛选；时间未知项单独展示。"}
+        data = news_catalog(db, window, topic, source, sort, q)
+        data["items"] = annotate_summaries(db, data["items"][:limit], "news")
+        data["unknown_time"] = annotate_summaries(db, data["unknown_time"][:limit], "news")
+        return data
 
     @app.get("/api/news/{item_id}")
-    def news_detail(item_id: str):
-        rows = db.rows("SELECT * FROM news WHERE id=?", (item_id,))
-        if not rows:
-            raise HTTPException(404, "News item not found")
-        data = json.loads(rows[0]["data"])
-        annotate_summaries(db, [data], "news")
-        data["versions"] = db.rows("SELECT content_hash,observed_at FROM news_versions WHERE item_id=? ORDER BY observed_at", (item_id,))
-        data["related_reports"] = [json.loads(r["data"]) for r in db.rows("SELECT data FROM news WHERE event_key=? AND id!=?", (rows[0]["event_key"], item_id))]
+    def news_detail(item_id: str, version_hash: str | None = Query(None, pattern="^[a-f0-9]{64}$")):
+        data = get_news_detail(db, item_id, version_hash)
+        if not data:
+            raise HTTPException(404, "News item or local version not found")
+        if not data.get("version_view") or data["version_view"]["is_current"]:
+            annotate_summaries(db, [data], "news")
+        data["source_state"] = next((r for r in source_states(db) if r["id"] == data["source_id"]), None)
+        data["related_projects"] = []
+        for url in data.get("related_repositories", []):
+            parts = urlsplit(url)
+            if parts.scheme != "https" or parts.hostname != "github.com" or parts.username or parts.password:
+                continue
+            name = parts.path.strip("/")
+            try:
+                record = resolve_repository(db, name)
+            except ValueError:
+                continue
+            data["related_projects"].append({"full_name":record["full_name"] if record else name,
+                                             "url":json.loads(record["data"])["url"] if record else url,
+                                             "tracked":bool(record)})
         return data
 
     @app.get("/api/archives")

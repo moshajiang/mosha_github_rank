@@ -153,7 +153,7 @@ def test_v3_migration_preserves_snapshots_and_curation_audit(tmp_path):
         con.execute("INSERT INTO snapshots VALUES(1,'2026-10-30','old',123,4)")
         con.execute("INSERT INTO repository_edits VALUES('edit',1,'set','{}','old')")
     db = Database(path)
-    assert db.rows("PRAGMA user_version")[0]["user_version"] == 4
+    assert db.rows("PRAGMA user_version")[0]["user_version"] == 5
     assert db.rows("SELECT stars FROM snapshots")[0]["stars"] == 123
     assert db.rows("SELECT id FROM repository_edits")[0]["id"] == "edit"
     assert db.rows("PRAGMA integrity_check")[0]["integrity_check"] == "ok"

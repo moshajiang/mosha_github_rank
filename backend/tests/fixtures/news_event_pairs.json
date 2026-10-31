@@ -1,0 +1,427 @@
+[
+  {
+    "case": "exact-title-1",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "Introducing reliable agent workflows",
+      "url": "https://one.example/news/0",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "INTRODUCING RELIABLE AGENT WORKFLOWS",
+      "url": "https://two.example/news/0",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "exact-title-2",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "A new model for multimodal reasoning",
+      "url": "https://one.example/news/1",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "A NEW MODEL FOR MULTIMODAL REASONING",
+      "url": "https://two.example/news/1",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "exact-title-3",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "Open benchmark for autonomous planning",
+      "url": "https://one.example/news/2",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "OPEN BENCHMARK FOR AUTONOMOUS PLANNING",
+      "url": "https://two.example/news/2",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "exact-title-4",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "Release notes for an efficient inference engine",
+      "url": "https://one.example/news/3",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "RELEASE NOTES FOR AN EFFICIENT INFERENCE ENGINE",
+      "url": "https://two.example/news/3",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "exact-title-5",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "Training methods for robust language agents",
+      "url": "https://one.example/news/4",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "TRAINING METHODS FOR ROBUST LANGUAGE AGENTS",
+      "url": "https://two.example/news/4",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "decimal-vs-integer",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "Introducing example model 5.1",
+      "url": "https://one.example/news/5",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing example model 51",
+      "url": "https://two.example/news/5",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "minor-versions",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "Introducing example model 5.1",
+      "url": "https://one.example/news/6",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing example model 5.2",
+      "url": "https://two.example/news/6",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "major-versions",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "Introducing example model version-1",
+      "url": "https://one.example/news/7",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing example model version-2",
+      "url": "https://two.example/news/7",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "hyphen-version",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "Introducing example model gpt-6",
+      "url": "https://one.example/news/8",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing example model gpt6",
+      "url": "https://two.example/news/8",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "decimal-zero",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "Introducing example model v1.0",
+      "url": "https://one.example/news/9",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing example model v10",
+      "url": "https://two.example/news/9",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "arxiv-abs-pdf-version",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "A research paper",
+      "url": "https://arxiv.org/abs/2610.12345v1",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    },
+    "right": {
+      "title": "Updated research paper",
+      "url": "https://arxiv.org/pdf/2610.12345v2.pdf",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    }
+  },
+  {
+    "case": "arxiv-host-spoof",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "A reliable new research model",
+      "url": "https://arxiv.org/abs/2610.12345",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    },
+    "right": {
+      "title": "A reliable new research model",
+      "url": "https://evil.example/?url=arxiv.org/abs/2610.12345",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    }
+  },
+  {
+    "case": "different-paper-id",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "A reliable new research model",
+      "url": "https://arxiv.org/abs/2610.12345",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    },
+    "right": {
+      "title": "A reliable new research model",
+      "url": "https://arxiv.org/abs/2610.54321",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    }
+  },
+  {
+    "case": "paper-and-commentary",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "A reliable new research model",
+      "url": "https://arxiv.org/abs/2610.12345",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    },
+    "right": {
+      "title": "A reliable new research model",
+      "url": "https://lab.example/commentary",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "four-digit-paper-id",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "Earlier research paper",
+      "url": "https://arxiv.org/abs/0706.0001v1",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    },
+    "right": {
+      "title": "Same paper version two",
+      "url": "https://arxiv.org/abs/0706.0001v2",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    }
+  },
+  {
+    "case": "unknown-time",
+    "auto_merge_expected": false,
+    "same_event_label": true,
+    "left": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://one.example/news/15",
+      "published_at": null,
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://two.example/news/15",
+      "published_at": null,
+      "kind": "official"
+    }
+  },
+  {
+    "case": "different-utc-days",
+    "auto_merge_expected": false,
+    "same_event_label": true,
+    "left": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://one.example/news/16",
+      "published_at": "2026-10-30T08:00:00Z",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://two.example/news/16",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "same-instant-different-offset",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://one.example/news/17",
+      "published_at": "2026-10-31T00:30:00+08:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://two.example/news/17",
+      "published_at": "2026-10-30T16:30:00Z",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "short-name-ambiguous",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "Nova",
+      "url": "https://one.example/news/18",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Nova",
+      "url": "https://two.example/news/18",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "unidentified-paper-title",
+    "auto_merge_expected": false,
+    "same_event_label": false,
+    "left": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://one.example/news/19",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "paper"
+    },
+    "right": {
+      "title": "Introducing a reliable agent model",
+      "url": "https://two.example/news/19",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "unicode-width-normalization",
+    "auto_merge_expected": true,
+    "same_event_label": true,
+    "left": {
+      "title": "Introducing example model ５.１",
+      "url": "https://one.example/news/20",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "Introducing example model 5.1",
+      "url": "https://two.example/news/20",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "cross-language-conservative-1",
+    "auto_merge_expected": false,
+    "same_event_label": true,
+    "left": {
+      "title": "Introducing a new multilingual model",
+      "url": "https://one.example/news/21",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "发布全新的多语言模型",
+      "url": "https://two.example/news/21",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "cross-language-conservative-2",
+    "auto_merge_expected": false,
+    "same_event_label": true,
+    "left": {
+      "title": "Reliable tool use for language agents",
+      "url": "https://one.example/news/22",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "语言代理的可靠工具调用",
+      "url": "https://two.example/news/22",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "cross-language-conservative-3",
+    "auto_merge_expected": false,
+    "same_event_label": true,
+    "left": {
+      "title": "Open weights for an efficient model",
+      "url": "https://one.example/news/23",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "高效模型开放权重发布",
+      "url": "https://two.example/news/23",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  },
+  {
+    "case": "cross-language-conservative-4",
+    "auto_merge_expected": false,
+    "same_event_label": true,
+    "left": {
+      "title": "A new benchmark for agent planning",
+      "url": "https://one.example/news/24",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    },
+    "right": {
+      "title": "新的代理规划能力基准",
+      "url": "https://two.example/news/24",
+      "published_at": "2026-10-31T08:00:00+00:00",
+      "kind": "official"
+    }
+  }
+]

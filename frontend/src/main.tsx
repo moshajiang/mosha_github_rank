@@ -137,8 +137,46 @@ type News = SummaryFields & {
   published_precision?: string;
   fetched_at?: string;
   related_repositories: string[];
-  related_reports?: { url: string; title: string; source_name: string }[];
+  related_reports?: {
+    id?: string;
+    url: string;
+    title: string;
+    source_name: string;
+    published_at?: string | null;
+    published_precision?: string;
+  }[];
   is_preprint?: boolean;
+  first_seen_at?: string;
+  raw_published_at?: string | null;
+  source_updated_at?: string | null;
+  content_hash?: string;
+  report_count?: number;
+  source_count?: number;
+  matching_report_count?: number;
+  grouping?: {
+    method: string;
+    reason: string;
+    rule_version: string;
+    updated_at: string | null;
+  };
+  versions?: {
+    content_hash: string;
+    observed_at: string;
+    is_current: boolean;
+  }[];
+  version_view?: {
+    content_hash: string;
+    observed_at: string;
+    is_current: boolean;
+  };
+  event_edits?: {
+    id: string;
+    action: string;
+    created_at: string;
+    data: { reason: string };
+  }[];
+  source_state?: Source | null;
+  related_projects?: { full_name: string; url: string; tracked: boolean }[];
 };
 type Source = {
   id: string;
@@ -319,7 +357,8 @@ function App() {
     isArchive = path === "/archive",
     isProjectDetail = path.startsWith("/projects/"),
     isResourceDetail = path.startsWith("/resources/"),
-    isDetail = isProjectDetail || isResourceDetail;
+    isNewsDetail = path.startsWith("/news/"),
+    isDetail = isProjectDetail || isResourceDetail || isNewsDetail;
   const kind = params.get("kind") === "potential" ? "potential" : "hot";
   const window = params.get("window") || (isNews ? "7d" : "7d");
   const category = params.get("category") || "",
@@ -528,17 +567,23 @@ function App() {
               : time(item.published_at)
             : "发布时间未知"}
         </span>
+        <a
+          className="news-original"
+          href={safeUrl(item.url)}
+          target="_blank"
+          rel="noreferrer"
+        >
+          原文 <ArrowUpRight size={12} />
+        </a>
         {!compact && saveButton("news", item.id, item)}
       </div>
-      <a
+      <button
         className="news-title"
-        href={safeUrl(item.url)}
-        target="_blank"
-        rel="noreferrer"
+        onClick={() => navigate("/news/" + item.id)}
       >
         {item.title_zh || item.title}
         <ArrowUpRight size={16} />
-      </a>
+      </button>
       {!compact && (item.summary_zh || item.summary) && (
         <p>
           {(item.summary_zh || item.summary).slice(0, 320)}
@@ -556,7 +601,10 @@ function App() {
                 : "来源原文摘要"}
           </span>
           {!!item.related_reports?.length && (
-            <span>{item.related_reports.length + 1} 个来源</span>
+            <span>
+              {item.source_count ? item.source_count + " 个来源 · " : ""}
+              {item.report_count || item.related_reports.length + 1} 篇报道
+            </span>
           )}
           {item.related_repositories.slice(0, 2).map((url) => (
             <a key={url} href={safeUrl(url)} target="_blank" rel="noreferrer">
@@ -742,9 +790,11 @@ function App() {
                     : isArchive
                       ? "历史榜单"
                       : isDetail
-                        ? isResourceDetail
-                          ? "资源详情"
-                          : "项目详情"
+                        ? isNewsDetail
+                          ? "资讯详情"
+                          : isResourceDetail
+                            ? "资源详情"
+                            : "项目详情"
                         : isHome
                           ? "发现"
                           : kind === "potential"
@@ -1406,7 +1456,7 @@ function App() {
                         <span>{news.data.unknown_time_total}</span>
                       </h2>
                       <p>
-                        来源没有可靠的发布时间，这些内容不计入上方的近期资讯。
+                        来源缺少精确发布时间，这些内容不计入上方的近期资讯。
                       </p>
                     </div>
                   </div>
@@ -1485,6 +1535,16 @@ function App() {
                 />
               )}
             </>
+          )}
+          {isNewsDetail && (
+            <NewsDetail
+              path={path}
+              versionHash={params.get("version_hash") || ""}
+              revision={revision}
+              cfg={cfg}
+              navigate={navigate}
+              saveButton={saveButton}
+            />
           )}
           {isResourceDetail && (
             <ResourceDetail
@@ -1812,6 +1872,305 @@ function Empty({
     </div>
   );
 }
+function newsDate(value?: string | null, precision?: string) {
+  if (!value) return "发布时间未知";
+  if (precision === "day") return value.slice(0, 10) + "（仅日期）";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "来源时间不可解析";
+  return parsed.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Asia/Shanghai",
+  });
+}
+
+function NewsDetail({
+  path,
+  versionHash,
+  revision,
+  cfg,
+  navigate,
+  saveButton,
+}: {
+  path: string;
+  versionHash: string;
+  revision: number;
+  cfg?: Config;
+  navigate: (url: string) => void;
+  saveButton: (
+    t: Saved["type"],
+    id: string,
+    data: Saved["data"],
+  ) => React.ReactNode;
+}) {
+  const id = path.replace("/news/", "");
+  const detail = useLoad<News>(
+    "/api/news/" +
+      encodeURIComponent(id) +
+      (versionHash ? "?version_hash=" + encodeURIComponent(versionHash) : ""),
+    revision,
+  );
+  const item = detail.data;
+  if (!item)
+    return (
+      <>
+        <Loading state={detail} />
+        <button className="outline-button" onClick={() => navigate("/news")}>
+          返回资讯
+        </button>
+      </>
+    );
+  const historical = item.version_view && !item.version_view.is_current;
+  const source = item.source_state;
+  return (
+    <>
+      <div className="detail-hero">
+        <div>
+          <span className="eyebrow">
+            {cfg?.topics[item.topic] || item.topic} · {item.source_name}
+          </span>
+          <h2>{item.title_zh || item.title}</h2>
+          {item.title_zh && item.title_zh !== item.title && <p>{item.title}</p>}
+          <div className="detail-tags">
+            <span>{newsDate(item.published_at, item.published_precision)}</span>
+            <span>
+              {item.is_preprint
+                ? "预印本 · 未标注同行评审"
+                : item.source_kind === "release"
+                  ? "项目 Release"
+                  : "来源发布"}
+            </span>
+            <span>
+              {item.grouping?.method === "manual" ? "人工分组" : "自动分组"}
+            </span>
+          </div>
+        </div>
+        <div className="detail-actions">
+          {saveButton("news", item.id, item)}
+          <a
+            className="primary-button"
+            href={safeUrl(item.url)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <ExternalLink size={16} />
+            阅读原文
+          </a>
+          <button className="outline-button" onClick={() => navigate("/news")}>
+            返回资讯
+          </button>
+        </div>
+      </div>
+      {historical && (
+        <div className="curation-notice" role="status">
+          <History size={16} />
+          <div>
+            正在查看本地采集版本：{newsDate(item.version_view?.observed_at)}
+            。下方关联报道与分组依据显示当前状态。
+          </div>
+          <button
+            className="text-button"
+            onClick={() => navigate("/news/" + item.id)}
+          >
+            查看最新记录
+          </button>
+        </div>
+      )}
+      <div className="resource-detail-columns">
+        <section className="detail-panel">
+          <h3>{item.summary_zh ? "AI 中文摘要" : "来源摘要 · 非全文"}</h3>
+          <p className="news-detail-summary">
+            {item.summary_zh ||
+              item.summary ||
+              "来源未提供摘要，请打开原文核对内容。"}
+          </p>
+          <SummaryEvidence meta={item.summary_meta} />
+          {item.summary_zh && (
+            <details className="news-original-summary">
+              <summary>查看来源原始摘要</summary>
+              <p>{item.summary}</p>
+            </details>
+          )}
+          <h3>
+            当前事件关联{" "}
+            <small>
+              {item.report_count || 1} 篇 · {item.source_count || 1} 个来源
+            </small>
+          </h3>
+          <p>关联报道保留各自的发布时间；可能不在列表当前筛选范围内。</p>
+          <div className="news-related">
+            <div className="news-related-current">
+              <strong>{item.source_name} · 当前条目</strong>
+              <span>
+                {newsDate(item.published_at, item.published_precision)}
+              </span>
+            </div>
+            {item.related_reports?.map((report) => (
+              <div key={report.id || report.url}>
+                <span>
+                  {report.source_name} ·{" "}
+                  {newsDate(report.published_at, report.published_precision)}
+                </span>
+                {report.id ? (
+                  <button onClick={() => navigate("/news/" + report.id)}>
+                    {report.title}
+                    <ArrowRight size={13} />
+                  </button>
+                ) : (
+                  <strong>{report.title}</strong>
+                )}
+                <a href={safeUrl(report.url)} target="_blank" rel="noreferrer">
+                  原文 <ArrowUpRight size={12} />
+                </a>
+              </div>
+            ))}
+          </div>
+          {!!item.related_projects?.length && (
+            <>
+              <h3>原文关联项目</h3>
+              <p>仅使用来源明确提供的 GitHub 链接，不根据名称相似推测。</p>
+              <div className="news-related">
+                {item.related_projects.map((project) => (
+                  <div key={project.url}>
+                    {project.tracked ? (
+                      <button
+                        onClick={() =>
+                          navigate("/projects/" + project.full_name)
+                        }
+                      >
+                        <Github size={14} />
+                        {project.full_name}
+                        <ArrowRight size={13} />
+                      </button>
+                    ) : (
+                      <a
+                        href={safeUrl(project.url)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <Github size={14} />
+                        {project.full_name}
+                        <ArrowUpRight size={12} />
+                      </a>
+                    )}
+                    <span>
+                      {project.tracked ? "已跟踪项目" : "外部仓库，尚未跟踪"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </section>
+        <section className="detail-panel">
+          <h3>时间与来源证据</h3>
+          <dl>
+            <dt>原发布时间</dt>
+            <dd>{newsDate(item.published_at, item.published_precision)}</dd>
+            <dt>来源日期原值</dt>
+            <dd>{item.raw_published_at || "来源未提供"}</dd>
+            <dt>来源更新时间</dt>
+            <dd>
+              {item.source_updated_at
+                ? newsDate(item.source_updated_at)
+                : "未提供独立更新时间"}
+            </dd>
+            <dt>首次发现</dt>
+            <dd>{newsDate(item.first_seen_at)}</dd>
+            <dt>{historical ? "当前记录抓取" : "最近抓取"}</dt>
+            <dd>{newsDate(item.fetched_at)}</dd>
+            <dt>来源当前状态</dt>
+            <dd>
+              {!source
+                ? "未记录"
+                : source.enabled === false
+                  ? "已暂停"
+                  : source.freshness === "stale"
+                    ? "数据过期"
+                    : source.status === "error"
+                      ? "采集失败"
+                      : source.status === "ok"
+                        ? "最近检查成功"
+                        : "待采集"}
+            </dd>
+          </dl>
+          <p className="muted-note">
+            精确时间以北京时间显示；仅日期不补造时分。发现、抓取和来源更新时间均不替代首次发布时间。
+          </p>
+          <h3>分组依据</h3>
+          <p>{item.grouping?.reason}</p>
+          <span className="method-tag">
+            {item.grouping?.rule_version || "待确认"} ·{" "}
+            {item.grouping?.method === "manual" ? "人工修订" : "保守自动规则"}
+          </span>
+          <h3>
+            本地采集版本 <small>{item.versions?.length || 0} 条</small>
+          </h3>
+          <p>
+            记录本地保存的内容与解析元数据，不等于作者修改次数；查看旧版本不会改写最新记录。
+          </p>
+          <div className="news-version-list">
+            {item.versions?.map((version) => (
+              <button
+                key={version.content_hash}
+                className={
+                  (
+                    versionHash
+                      ? version.content_hash === versionHash
+                      : version.is_current
+                  )
+                    ? "selected"
+                    : ""
+                }
+                onClick={() =>
+                  navigate(
+                    "/news/" +
+                      item.id +
+                      (version.is_current
+                        ? ""
+                        : "?version_hash=" + version.content_hash),
+                  )
+                }
+              >
+                <span>{newsDate(version.observed_at)}</span>
+                <small>
+                  {version.content_hash.slice(0, 12)} ·{" "}
+                  {version.is_current ? "当前" : "历史记录"}
+                </small>
+              </button>
+            ))}
+          </div>
+          <h3>事件修订记录</h3>
+          {!item.event_edits?.length ? (
+            <p>尚无人工分组修订。</p>
+          ) : (
+            item.event_edits.map((edit) => (
+              <div className="news-edit" key={edit.id}>
+                <strong>
+                  {{
+                    merge: "合并分组",
+                    split: "拆分条目",
+                    reset: "恢复自动规则",
+                  }[edit.action] || edit.action}{" "}
+                  · {newsDate(edit.created_at)}
+                </strong>
+                <p>{edit.data.reason}</p>
+              </div>
+            ))
+          )}
+          <dl>
+            <dt>条目 ID</dt>
+            <dd className="resource-hash">{item.id}</dd>
+          </dl>
+        </section>
+      </div>
+    </>
+  );
+}
+
 const scanLabels: Record<string, string> = {
   complete: "完整扫描",
   partial: "部分扫描",

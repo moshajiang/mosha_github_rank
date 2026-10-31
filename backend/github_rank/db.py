@@ -131,6 +131,22 @@ PRAGMA user_version=4;
 COMMIT;
 """
 
+MIGRATION_5 = """
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS news_event_overrides (
+ item_id TEXT PRIMARY KEY REFERENCES news(id), group_id TEXT NOT NULL,
+ reason TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS news_event_override_group ON news_event_overrides(group_id);
+CREATE TABLE IF NOT EXISTS news_event_edits (
+ id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, item_id TEXT NOT NULL REFERENCES news(id),
+ action TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS news_event_edit_item ON news_event_edits(item_id,created_at);
+PRAGMA user_version=5;
+COMMIT;
+"""
+
 
 class Database:
     def __init__(self, path):
@@ -139,7 +155,7 @@ class Database:
         with self.connect() as con:
             con.execute("PRAGMA journal_mode=WAL")
             version = con.execute("PRAGMA user_version").fetchone()[0]
-            if version > 4:
+            if version > 5:
                 raise RuntimeError("Database schema is newer than this application")
             if version == 0:
                 con.executescript(SCHEMA)
@@ -152,6 +168,9 @@ class Database:
                 version = 3
             if version == 3:
                 con.executescript(MIGRATION_4)
+                version = 4
+            if version == 4:
+                con.executescript(MIGRATION_5)
 
     @contextmanager
     def connect(self):

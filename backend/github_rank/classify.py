@@ -45,7 +45,7 @@ def news_topic(text, kind="official"):
     text = text.lower()
     if re.search(r"agent|\bmcp\b|\bskills?\b|copilot|codex|claude.code", text):
         return "agents"
-    if re.search(r"robot|vision|video|image|audio|multimodal|多模态|图像|语音", text):
+    if re.search(r"\b(?:robot\w*|vision|video\w*|image\w*|audio|multimodal)\b|多模态|图像|语音", text):
         return "multimodal"
     if kind == "paper" or re.search(r"research|benchmark|training|研究|论文", text):
         return "research"

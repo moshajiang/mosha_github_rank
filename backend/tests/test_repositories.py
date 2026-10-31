@@ -178,7 +178,7 @@ def test_v2_migration_preserves_existing_snapshots_and_source_preferences(tmp_pa
         con.execute("INSERT INTO sources(id,data) VALUES('lab','{}')")
         con.execute("INSERT INTO source_preferences VALUES('lab',0,'old')")
     db = Database(path)
-    assert db.rows("PRAGMA user_version")[0]["user_version"] == 4
+    assert db.rows("PRAGMA user_version")[0]["user_version"] == 5
     assert db.rows("SELECT stars FROM snapshots") == [{"stars": 123}]
     assert db.rows("SELECT enabled FROM source_preferences") == [{"enabled": 0}]
     assert db.rows("PRAGMA integrity_check")[0]["integrity_check"] == "ok"

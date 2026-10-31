@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import html
+import unicodedata
 import feedparser
 from bs4 import BeautifulSoup
 from .classify import news_topic
@@ -52,14 +53,17 @@ def parse_source_date(raw):
     return None, "unknown"
 
 
-def event_key(title, url, published_at):
-    arxiv = re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?", url)
+def event_key(title, url, published_at, kind="official"):
+    parts = urlsplit(url)
+    arxiv = re.fullmatch(r"/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?/?", parts.path) if parts.hostname in ("arxiv.org", "www.arxiv.org", "export.arxiv.org") else None
     if arxiv:
         return "arxiv:" + arxiv.group(1)
-    # Conservative exact-title clustering; model version digits stay intact.
-    normalized = re.sub(r"[^\w\u4e00-\u9fff]", "", title.casefold())
-    identity = f"{normalized}:{published_at[:10]}" if published_at and len(normalized) >= 16 else url
-    return hashlib.sha256(identity.encode()).hexdigest()
+    # Keep dot/hyphen-delimited version tokens: 5.1 must never become 51.
+    normalized = " ".join(re.findall(r"\w+(?:[.-]\w+)*", unicodedata.normalize("NFKC", title).casefold()))
+    stamp = iso_date(published_at)
+    if stamp and len(normalized) >= 16 and kind != "paper":
+        return "title-v2:" + hashlib.sha256(f"{normalized}:{stamp[:10]}".encode()).hexdigest()
+    return "url:" + hashlib.sha256(url.encode()).hexdigest()
 
 
 def build_item(source, title, url, summary="", published_at=None, raw_date=None):
@@ -75,7 +79,7 @@ def build_item(source, title, url, summary="", published_at=None, raw_date=None)
         "source_name": source["name"], "source_kind": source.get("kind", "official"),
         "title": title, "url": url, "summary": summary, "summary_method": "original",
         "topic": topic, "published_at": published_at, "raw_published_at": raw_date,
-        "event_key": event_key(title, url, published_at), "related_repositories": repo_links,
+        "event_key": event_key(title, url, published_at, source.get("kind", "official")), "related_repositories": repo_links,
         "importance": 3 if topic in ("agents", "models") else 2 if topic in ("research", "multimodal") else 1,
         "importance_reason": "按主题优先级展示，非全网热度", "is_preprint": source.get("kind") == "paper",
     }
@@ -89,11 +93,16 @@ def parse_feed(source, body):
     for entry in parsed.entries:
         if not entry.get("link"):
             continue
-        published = entry.get("published_parsed")
+        published = entry.get("published_parsed") if "published_parsed" in entry.keys() else None
         timestamp = datetime.fromtimestamp(calendar.timegm(published), timezone.utc).isoformat(timespec="seconds") if published else None
         try:
             item = build_item(source, entry.get("title", ""), urljoin(source["url"], entry.link),
                               entry.get("summary", ""), timestamp, entry.get("published"))
+            item["published_precision"] = "timestamp" if timestamp else "unknown"
+            # FeedParserDict can alias missing updated_parsed to published_parsed.
+            # Only an actual parsed updated field is evidence of a source update time.
+            updated = entry.get("updated_parsed") if "updated_parsed" in entry.keys() else None
+            item["source_updated_at"] = datetime.fromtimestamp(calendar.timegm(updated), timezone.utc).isoformat(timespec="seconds") if updated else None
             # Preserve verified href targets before stripping HTML.
             soup = BeautifulSoup(entry.get("summary", ""), "html.parser")
             item["related_repositories"] = sorted(set(
@@ -139,6 +148,7 @@ def parse_html(source, body):
 
 
 def store_item(db, item):
+    item = {k:v for k,v in item.items() if k != "content_updated"}
     now = utcnow()
     body_hash = hashlib.sha256(dumps(item).encode()).hexdigest()
     existing = db.rows("SELECT first_seen_at,content_hash FROM news WHERE url=?", (item["url"],))

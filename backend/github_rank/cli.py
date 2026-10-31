@@ -11,6 +11,7 @@ from .summaries import summarize
 from .classify import CATEGORIES, AGENT_TYPES
 from .repositories import repository_items, edit_repository, edit_history
 from .scheduler import Scheduler, scheduler_status, request_stop
+from .news_events import news_items, edit_events, edit_history as news_edit_history
 
 
 def main():
@@ -59,6 +60,17 @@ def main():
     reset.add_argument("--reason", required=True)
     history = project_actions.add_parser("history")
     history.add_argument("repository")
+    news = commands.add_parser("news", help="Inspect and curate local news event groups")
+    news_actions = news.add_subparsers(dest="news_action", required=True)
+    listing = news_actions.add_parser("list")
+    listing.add_argument("--q", default="")
+    listing.add_argument("--limit", type=int, default=50)
+    for action in ("merge", "split", "reset"):
+        edit_news = news_actions.add_parser(action)
+        edit_news.add_argument("items", nargs="+")
+        edit_news.add_argument("--reason", required=True)
+    news_history = news_actions.add_parser("history")
+    news_history.add_argument("item_id")
     args = parser.parse_args()
     settings = Settings.from_env()
     db = Database(settings.db_path)
@@ -106,6 +118,20 @@ def main():
         except (ValueError, RuntimeError) as exc:
             parser.error(str(exc))
         print(json.dumps(output, ensure_ascii=False, indent=2))
+    elif args.command == "news":
+        try:
+            if args.news_action == "list":
+                if not 1 <= args.limit <= 500:
+                    parser.error("--limit must be between 1 and 500")
+                rows = [r for r in news_items(db) if args.q.casefold() in (r["title"]+" "+r["summary"]).casefold()]
+                output = [{k:r[k] for k in ("id","title","source_name","published_at","url","event_group_id","grouping")} for r in rows[:args.limit]]
+            elif args.news_action == "history":
+                output = news_edit_history(db,args.item_id)
+            else:
+                output = edit_events(db,args.news_action,args.items,args.reason)
+        except (ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(output,ensure_ascii=False,indent=2))
     else:
         if args.status:
             print(json.dumps(scheduler_status(db), ensure_ascii=False, indent=2))
