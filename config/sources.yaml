@@ -56,5 +56,8 @@ collection:
   search_per_query: 20
   max_repositories: 200
   max_resource_files: 30
+  max_tree_requests: 20
+  max_tree_depth: 12
+  max_resource_requests_per_batch: 300
   news_items_per_source: 25
   release_repositories: 3

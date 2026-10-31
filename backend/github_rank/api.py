@@ -17,6 +17,7 @@ from .summaries import annotate_summaries
 from .identity import workspace_id
 from .repositories import repository_items, resolve_repository, overrides_by_repo, apply_override, canonical_resource
 from .scheduler import scheduler_status
+from .agent_resources import enrich_resource, resource_items, resource_catalog, duplicate_key, with_duplicates
 
 
 def create_app(settings=None):
@@ -113,7 +114,7 @@ def create_app(settings=None):
         data.pop("readme_excerpt", None)
         data["requested_name"] = name
         data["aliases"] = [r["full_name"] for r in db.rows("SELECT full_name FROM repository_aliases WHERE repo_id=? ORDER BY full_name", (record["id"],))]
-        data["resources"] = [canonical_resource(json.loads(r["data"]), data) for r in db.rows("SELECT data FROM resources WHERE repo_id=?", (record["id"],))]
+        data["resources"] = [enrich_resource(json.loads(r["data"]), data) for r in db.rows("SELECT data FROM resources WHERE repo_id=?", (record["id"],))]
         project_url = data["url"].rstrip("/").lower()
         project_urls = {project_url, *("https://github.com/" + alias.lower() for alias in data["aliases"])}
         data["related_news"] = []
@@ -157,26 +158,21 @@ def create_app(settings=None):
                 "note": "观察列表按当前总 Star 排序，不是区间增长榜。"}
 
     @app.get("/api/agent-resources")
-    def agent_resources(kind: str = "", q: str = Query("", max_length=200), limit: int = Query(100, ge=1, le=500)):
-        result = []
-        overrides = overrides_by_repo(db)
-        for row in db.rows("SELECT r.data,p.data AS repo_data FROM resources r JOIN repositories p ON p.id=r.repo_id ORDER BY r.updated_at DESC"):
-            item, repo = json.loads(row["data"]), json.loads(row["repo_data"])
-            if overrides.get(repo["id"], {}).get("excluded"):
-                continue
-            item = canonical_resource(item, repo)
-            if kind and item["kind"] != kind or q.lower() not in (item["name"] + " " + item["description"]).lower():
-                continue
-            item["repository_stars"] = repo["stars"]
-            result.append(item)
-        return {"items": annotate_summaries(db, result[:limit], "resource"), "total": len(result), "note": "展示关联仓库 Star，不代表单个资源的安装或使用量。"}
+    def agent_resources(kind: Literal["", "skill", "plugin", "mcp"] = "", q: str = Query("", max_length=200),
+                        limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0, le=100000), group_duplicates: bool = True):
+        result, matched = resource_catalog(db, kind, q, group_duplicates)
+        return {"items": annotate_summaries(db, result[offset:offset+limit], "resource"), "total": len(result), "offset": offset,
+                "matching_source_total": matched, "group_duplicates": group_duplicates,
+                "note": "同类型、文件字节相同的资源合并展示，来源可展开；仓库 Star 不代表资源安装或使用量。"}
 
     @app.get("/api/agent-resources/{resource_id}")
     def resource(resource_id: str):
-        rows = db.rows("SELECT r.data,p.data AS repo_data FROM resources r JOIN repositories p ON p.id=r.repo_id WHERE r.id=?", (resource_id,))
-        if not rows:
+        items = resource_items(db, include_excluded=True)
+        item = next((r for r in items if r["id"] == resource_id), None)
+        if not item:
             raise HTTPException(404, "Resource not found")
-        return annotate_summaries(db, [canonical_resource(json.loads(rows[0]["data"]), json.loads(rows[0]["repo_data"]))], "resource")[0]
+        peers = [r for r in items if duplicate_key(r) == duplicate_key(item) and (not r["ranking_excluded"] or r["id"] == resource_id)]
+        return annotate_summaries(db, [with_duplicates(item, peers)], "resource")[0]
 
     @app.get("/api/news/sources")
     def news_sources():

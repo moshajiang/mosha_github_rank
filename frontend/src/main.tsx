@@ -67,6 +67,7 @@ type Repo = SummaryFields & {
   period_start?: string;
   period_end?: string;
   resource_scan?: string;
+  resource_scan_report?: Resource["scan_report"];
   ranking_excluded?: boolean;
   requested_name?: string;
   aliases?: string[];
@@ -94,6 +95,35 @@ type Resource = SummaryFields & {
   compatibility: string;
   compatibility_status: string;
   repository_stars?: number;
+  commit?: string;
+  content_hash?: string;
+  ecosystem?: string;
+  license?: string;
+  declared_version?: string | null;
+  compatibility_evidence?: { field: string; quote: string; url: string }[];
+  format_warnings?: string[];
+  verification_status?: string;
+  duplicate_count?: number;
+  scan_status?: string;
+  scan_report?: {
+    status?: string;
+    tree_complete?: boolean;
+    tree_requests?: number;
+    candidate_files?: number;
+    read_files?: number;
+    invalid_files?: number;
+    reasons?: string[];
+    limits?: { files: number; trees: number; depth: number };
+  };
+  same_content_sources?: {
+    id: string;
+    repo_name: string;
+    path: string;
+    url: string;
+    commit: string;
+    verification_status: string;
+  }[];
+  ranking_excluded?: boolean;
 };
 type News = SummaryFields & {
   id: string;
@@ -287,7 +317,9 @@ function App() {
     isHome = path === "/",
     isSaved = path === "/saved",
     isArchive = path === "/archive",
-    isDetail = path.startsWith("/projects/");
+    isProjectDetail = path.startsWith("/projects/"),
+    isResourceDetail = path.startsWith("/resources/"),
+    isDetail = isProjectDetail || isResourceDetail;
   const kind = params.get("kind") === "potential" ? "potential" : "hot";
   const window = params.get("window") || (isNews ? "7d" : "7d");
   const category = params.get("category") || "",
@@ -297,6 +329,10 @@ function App() {
     sort = params.get("sort") || "latest",
     source = params.get("source") || "";
   const resourcesView = isAgents && params.get("view") === "resources";
+  const resourcePage = Math.min(
+    1001,
+    Math.max(1, Math.floor(Number(params.get("page") || "1")) || 1),
+  );
   const language = params.get("language") || "";
   const minStars = params.get("min_stars") || "";
   const maxStars = params.get("max_stars") || "";
@@ -336,11 +372,16 @@ function App() {
       }),
     revision,
   );
-  const resources = useLoad<{ items: Resource[]; total: number }>(
+  const resources = useLoad<{
+    items: Resource[];
+    total: number;
+    matching_source_total: number;
+  }>(
     "/api/agent-resources?" +
       new URLSearchParams({
         q: query,
-        kind: agentType === "skill" || agentType === "plugin" ? agentType : "",
+        kind: ["skill", "plugin", "mcp"].includes(agentType) ? agentType : "",
+        offset: String((resourcePage - 1) * 100),
       }),
     revision,
   );
@@ -362,11 +403,12 @@ function App() {
   }
   function filter(key: string, value: string) {
     const next = new URLSearchParams(params);
+    if (key !== "page") next.delete("page");
     value ? next.set(key, value) : next.delete(key);
     if (
       key === "view" &&
       value === "resources" &&
-      !["skill", "plugin"].includes(next.get("agent_type") || "")
+      !["skill", "plugin", "mcp"].includes(next.get("agent_type") || "")
     )
       next.delete("agent_type");
     const url = path + (next.size ? "?" + next : "");
@@ -533,27 +575,50 @@ function App() {
           <Layers3 size={20} />
         </span>
         <span className="eyebrow">
-          {r.kind === "skill" ? "AGENT SKILL" : "PLUGIN"}
+          {r.kind === "skill"
+            ? "AGENT SKILL"
+            : r.kind === "mcp"
+              ? "MCP SERVER"
+              : "PLUGIN"}
         </span>
         {saveButton("resource", r.id, r)}
       </div>
-      <a
-        href={safeUrl(r.url)}
-        target="_blank"
-        rel="noreferrer"
+      <button
+        onClick={() => navigate("/resources/" + r.id)}
         className="resource-title"
       >
         {r.name}
         <ArrowUpRight size={16} />
-      </a>
+      </button>
       <p>{r.summary_zh || r.description}</p>
       <SummaryEvidence meta={r.summary_meta} />
+      <div className="resource-labels">
+        <span>
+          {r.verification_status === "current"
+            ? "本轮已核对"
+            : r.verification_status === "previous"
+              ? "保留上次记录"
+              : "待重新扫描"}
+        </span>
+        {(r.duplicate_count || 0) > 1 && (
+          <span>{r.duplicate_count} 个同内容来源</span>
+        )}
+        <a href={safeUrl(r.url)} target="_blank" rel="noreferrer">
+          原文件 <ArrowUpRight size={12} />
+        </a>
+      </div>
       <div className="resource-repo">
         <Github size={13} />
         {r.repo_name}
       </div>
       <div className="resource-foot">
-        <span>作者声明适配，未测试</span>
+        <span>
+          {r.compatibility_evidence?.length
+            ? "作者声明，未测试"
+            : r.content_hash
+              ? "未声明兼容要求"
+              : "待核对兼容声明"}
+        </span>
         <span>
           仓库 <Star size={12} />
           {number(r.repository_stars || 0)}
@@ -677,7 +742,9 @@ function App() {
                     : isArchive
                       ? "历史榜单"
                       : isDetail
-                        ? "项目详情"
+                        ? isResourceDetail
+                          ? "资源详情"
+                          : "项目详情"
                         : isHome
                           ? "发现"
                           : kind === "potential"
@@ -989,7 +1056,7 @@ function App() {
                         className={resourcesView ? "active" : ""}
                         onClick={() => filter("view", "resources")}
                       >
-                        Skills / 插件
+                        Skills / 插件 / MCP
                       </button>
                     </>
                   ) : (
@@ -1074,7 +1141,8 @@ function App() {
                       : cfg?.categories || {},
                 )
                   .filter(
-                    ([k]) => !resourcesView || ["skill", "plugin"].includes(k),
+                    ([k]) =>
+                      !resourcesView || ["skill", "plugin", "mcp"].includes(k),
                   )
                   .map(([k, v]) => (
                     <button
@@ -1267,9 +1335,38 @@ function App() {
                 </div>
               </div>
               <Loading state={resources} />
+              <p className="muted-note">
+                {resources.data?.total || 0} 项资源 · 匹配{" "}
+                {resources.data?.matching_source_total || 0}{" "}
+                个来源文件；相同类型与文件内容合并展示，详情可查看全部来源。
+              </p>
               <div className="repo-grid wide">
                 {resources.data?.items.map(resourceCard)}
               </div>
+              {(resources.data?.total || 0) > 100 && (
+                <div className="resource-pagination">
+                  <button
+                    className="outline-button"
+                    disabled={resourcePage <= 1}
+                    onClick={() => filter("page", String(resourcePage - 1))}
+                  >
+                    上一页
+                  </button>
+                  <span>
+                    第 {resourcePage} /{" "}
+                    {Math.ceil((resources.data?.total || 0) / 100)} 页
+                  </span>
+                  <button
+                    className="outline-button"
+                    disabled={
+                      resourcePage * 100 >= (resources.data?.total || 0)
+                    }
+                    onClick={() => filter("page", String(resourcePage + 1))}
+                  >
+                    下一页
+                  </button>
+                </div>
+              )}
               {!resources.loading && !resources.data?.items.length && (
                 <Empty
                   title="暂无匹配的资源"
@@ -1389,7 +1486,15 @@ function App() {
               )}
             </>
           )}
-          {isDetail && (
+          {isResourceDetail && (
+            <ResourceDetail
+              path={path}
+              revision={revision}
+              navigate={navigate}
+              saveButton={saveButton}
+            />
+          )}
+          {isProjectDetail && (
             <ProjectDetail
               path={path}
               revision={revision}
@@ -1707,6 +1812,228 @@ function Empty({
     </div>
   );
 }
+const scanLabels: Record<string, string> = {
+  complete: "完整扫描",
+  partial: "部分扫描",
+  failed: "扫描失败",
+  not_scanned: "尚未扫描",
+};
+const verificationLabels: Record<string, string> = {
+  current: "本轮已核对",
+  previous: "保留上次记录，尚未重新核对",
+  unknown: "待重新扫描",
+};
+const scanReasons: Record<string, string> = {
+  resource_file_limit: "达到文件数量上限",
+  tree_request_limit: "达到目录请求上限",
+  tree_depth_or_queue_limit: "达到目录深度或队列上限",
+  file_size_limit: "文件超过读取大小上限",
+  file_fetch_failed: "部分文件读取失败",
+  nonrecursive_tree_truncated: "逐层目录仍被上游截断",
+  tree_unavailable: "目录访问失败",
+  page_is_partial: "公开页面只提供部分目录",
+  page_directory_unavailable: "部分公开目录无法读取",
+  batch_resource_budget: "本批资源请求额度已用完",
+  missing_commit: "未获取到证据 commit",
+};
+
+function ResourceDetail({
+  path,
+  revision,
+  navigate,
+  saveButton,
+}: {
+  path: string;
+  revision: number;
+  navigate: (url: string) => void;
+  saveButton: (
+    t: Saved["type"],
+    id: string,
+    data: Saved["data"],
+  ) => React.ReactNode;
+}) {
+  const detail = useLoad<Resource>(
+    "/api/agent-resources/" +
+      encodeURIComponent(path.replace("/resources/", "")),
+    revision,
+  );
+  const item = detail.data;
+  if (!item)
+    return (
+      <>
+        <Loading state={detail} />
+        <button
+          className="outline-button"
+          onClick={() => navigate("/agents?view=resources")}
+        >
+          返回资源目录
+        </button>
+      </>
+    );
+  const scan = item.scan_report;
+  return (
+    <>
+      <div className="detail-hero">
+        <div>
+          <span className="eyebrow">
+            {item.kind === "skill"
+              ? "AGENT SKILL"
+              : item.kind === "mcp"
+                ? "MCP SERVER"
+                : "PLUGIN"}
+          </span>
+          <h2>{item.name}</h2>
+          <p>{item.summary_zh || item.description}</p>
+          <div className="detail-tags">
+            <span>{item.ecosystem || "待核对格式"}</span>
+            <span>
+              {verificationLabels[item.verification_status || "unknown"]}
+            </span>
+            <span>{item.license || "许可未声明"}</span>
+          </div>
+        </div>
+        <div className="detail-actions">
+          {saveButton("resource", item.id, item)}
+          <a
+            className="primary-button"
+            href={safeUrl(item.url)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <ExternalLink size={16} />
+            查看原文件
+          </a>
+          <button
+            className="outline-button"
+            onClick={() => navigate("/projects/" + item.repo_name)}
+          >
+            所属仓库
+          </button>
+        </div>
+      </div>
+      {item.ranking_excluded && (
+        <div className="curation-notice excluded">
+          所属仓库已从当前目录排除，此处保留资源的历史出处。
+        </div>
+      )}
+      <div className="resource-detail-columns">
+        <section className="detail-panel">
+          <h3>兼容要求与证据</h3>
+          <p>
+            {item.compatibility_evidence?.length
+              ? item.compatibility
+              : item.content_hash
+                ? "原文件未提供可识别的兼容要求。"
+                : "旧记录尚未保存字段证据，需要重新扫描原文件。"}
+          </p>
+          <span className="method-tag">
+            {item.compatibility_status} · 生态格式不代表已验证运行兼容性
+          </span>
+          {item.compatibility_evidence?.map((e, index) => (
+            <blockquote className="resource-evidence" key={e.field + index}>
+              <span>{e.field}</span>
+              <p>{e.quote}</p>
+              <a href={safeUrl(e.url)} target="_blank" rel="noreferrer">
+                查看字段原文 <ArrowUpRight size={12} />
+              </a>
+            </blockquote>
+          ))}
+          <h3>来源与版本</h3>
+          <dl>
+            <dt>所属仓库</dt>
+            <dd>{item.repo_name}</dd>
+            <dt>原始路径</dt>
+            <dd>{item.path}</dd>
+            <dt>证据 commit</dt>
+            <dd className="resource-hash">{item.commit || "待核对"}</dd>
+            <dt>作者版本</dt>
+            <dd>{item.declared_version || "未声明"}</dd>
+            <dt>文件 SHA-256</dt>
+            <dd className="resource-hash">
+              {item.content_hash || "旧记录未保存"}
+            </dd>
+          </dl>
+          <SummaryEvidence meta={item.summary_meta} />
+          {!!item.format_warnings?.length && (
+            <>
+              <h3>格式提醒</h3>
+              {item.format_warnings.map((w) => (
+                <p key={w}>{w}</p>
+              ))}
+            </>
+          )}
+        </section>
+        <section className="detail-panel">
+          <h3>扫描覆盖</h3>
+          <dl>
+            <dt>最近仓库扫描</dt>
+            <dd>
+              {scanLabels[item.scan_status || "not_scanned"] || "尚未扫描"}
+            </dd>
+            <dt>本条记录</dt>
+            <dd>{verificationLabels[item.verification_status || "unknown"]}</dd>
+            <dt>候选文件读取</dt>
+            <dd>
+              {scan
+                ? (scan.read_files || 0) + " / " + (scan.candidate_files || 0)
+                : "旧记录未保存"}
+            </dd>
+            <dt>目录覆盖</dt>
+            <dd>
+              {scan
+                ? scan.tree_complete
+                  ? "已遍历完整目录"
+                  : "目录未完整覆盖"
+                : "待重新扫描"}
+            </dd>
+            <dt>目录请求</dt>
+            <dd>{scan?.tree_requests ?? "—"}</dd>
+          </dl>
+          {scan?.limits && (
+            <p className="muted-note">
+              本轮上限：{scan.limits.files} 个文件、{scan.limits.trees}{" "}
+              次目录请求、{scan.limits.depth} 层深度。
+            </p>
+          )}
+          {!!scan?.reasons?.length && (
+            <p className="runtime-warning">
+              {scan.reasons.map((r) => scanReasons[r] || r).join("；")}
+            </p>
+          )}
+          <h3>
+            同内容来源 <small>{item.duplicate_count || 1} 处</small>
+          </h3>
+          <p>按资源类型与原文件字节 hash 匹配，不据此判断原创或转载关系。</p>
+          <div className="resource-origins">
+            {item.same_content_sources?.map((source) => (
+              <div key={source.id}>
+                <a href={safeUrl(source.url)} target="_blank" rel="noreferrer">
+                  {source.repo_name}
+                  <ArrowUpRight size={13} />
+                </a>
+                <small>{source.path}</small>
+                <span>{verificationLabels[source.verification_status]}</span>
+                {source.id !== item.id && (
+                  <button onClick={() => navigate("/resources/" + source.id)}>
+                    查看此来源详情 <ArrowRight size={12} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <p className="muted-note">
+            关联仓库 Star：
+            {item.repository_stars == null
+              ? "未获取"
+              : number(item.repository_stars)}
+            。资源没有独立安装或使用量。
+          </p>
+        </section>
+      </div>
+    </>
+  );
+}
+
 function ProjectDetail({
   path,
   revision,
@@ -1921,6 +2248,18 @@ function ProjectDetail({
                 not_scanned: "尚未扫描",
               }[repo.resource_scan || "not_scanned"] || "尚未扫描"}
             </dd>
+            {repo.resource_scan_report && (
+              <>
+                <dt>资源文件读取</dt>
+                <dd>
+                  {repo.resource_scan_report.read_files || 0} /{" "}
+                  {repo.resource_scan_report.candidate_files || 0} 个候选；
+                  {repo.resource_scan_report.tree_complete
+                    ? "目录完整"
+                    : "目录不完整"}
+                </dd>
+              </>
+            )}
           </dl>
           <p className="muted-note">{metrics?.observation_note}</p>
           {metrics?.score_breakdown?.map((s) => (

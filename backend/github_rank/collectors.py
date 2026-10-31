@@ -3,13 +3,12 @@ from urllib.parse import quote
 import base64
 import json
 import re
-import uuid
-import yaml
 from bs4 import BeautifulSoup
 from .classify import classify_repo, CATEGORIES
 from .db import dumps, utcnow
 from .transport import FetchError, RateLimited
 from .repositories import normalize_name, apply_override, record_aliases
+from .agent_resources import resource_record, scan_resources
 
 
 REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -81,34 +80,7 @@ def github_page_data(fetcher, name):
     }
 
 
-def resource_record(repo, path, text, sha):
-    kind = "skill" if path.rsplit("/", 1)[-1] == "SKILL.md" else "plugin"
-    if kind == "skill":
-        match = re.match(r"\A---\s*\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, re.S)
-        if not match:
-            return None
-        metadata = yaml.safe_load(match.group(1))
-        if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str) or not isinstance(metadata.get("description"), str):
-            return None
-        if not metadata["description"].strip() or len(metadata["name"]) > 64 or len(metadata["description"]) > 1024:
-            return None
-    else:
-        metadata = json.loads(text)
-        if not isinstance(metadata, dict) or not metadata.get("name"):
-            return None
-    url = f"https://github.com/{repo['full_name']}/blob/{quote(sha, safe='')}/{quote(path)}"
-    return {
-        "id": uuid.uuid5(uuid.NAMESPACE_URL, f"github:{repo['id']}:{path}").hex,
-        "repo_id": repo["id"], "repo_name": repo["full_name"], "path": path, "kind": kind,
-        "name": str(metadata["name"])[:100], "description": str(metadata.get("description", ""))[:1200],
-        "compatibility": str(metadata.get("compatibility", "未声明"))[:500],
-        "compatibility_status": "作者声明，未测试", "license": str(metadata.get("license", "未声明"))[:200],
-        "url": url, "commit": sha,
-        "metric_note": "关联仓库指标；无独立安装量", "summary_method": "original",
-    }
-
-
-def collect_repo(db, fetcher, name, resource_limit=30):
+def collect_repo(db, fetcher, name, resource_limit=30, tree_limit=20, depth_limit=12, force_resources=False):
     name = normalize_name(name)
     fallback_reason = None
     try:
@@ -155,56 +127,13 @@ def collect_repo(db, fetcher, name, resource_limit=30):
         "data_source": repo.get("_data_source", "github_api"),
     }
     resources = []
-    if scan_agent_types and repo.get("_data_source") and repo.get("_sha"):
-        sha = repo["_sha"]
-        paths = []
-        for anchor in repo["_soup"].select('.markdown-body a[href]'):
-            match = re.match(rf"/{re.escape(repo['full_name'])}/(?:blob|tree)/{re.escape(repo['default_branch'])}/(skills/[^?#]+)", anchor["href"])
-            if match:
-                path = match.group(1).rstrip("/")
-                if path.endswith("SKILL.md"):
-                    paths.append(path)
-                elif path.count("/") == 1:
-                    paths.append(path + "/SKILL.md")
-        for item in repo["_tree"]:
-            if item["name"] == "SKILL.md":
-                paths.append(item["path"])
-            elif item["name"] == ".claude-plugin":
-                paths.append(item["path"] + "/plugin.json")
-        data["resource_scan"] = "partial"
-        for path in list(dict.fromkeys(paths))[:resource_limit]:
-            try:
-                content = fetcher.get(f"https://raw.githubusercontent.com/{repo['full_name']}/{sha}/{quote(path)}").decode("utf-8", errors="replace")
-                record = resource_record(repo, path, content, sha)
-                if record:
-                    resources.append(record)
-            except (FetchError, ValueError, yaml.YAMLError) as exc:
-                warnings.append(f"Resource {path}: {type(exc).__name__}")
-    elif scan_agent_types:
-        try:
-            branch = github_json(fetcher, f"/repos/{repo['full_name']}/branches/{quote(repo['default_branch'], safe='')}")
-            sha = branch["commit"]["sha"]
-            tree = github_json(fetcher, f"/repos/{repo['full_name']}/git/trees/{sha}?recursive=1")
-            paths = [r["path"] for r in tree.get("tree", []) if r.get("type") == "blob" and (
-                r["path"].rsplit("/", 1)[-1] == "SKILL.md" or r["path"].endswith(".claude-plugin/plugin.json")
-            )]
-            data["resource_scan"] = "partial" if tree.get("truncated") or len(paths) > resource_limit else "complete"
-            for path in paths[:resource_limit]:
-                try:
-                    content = decode_content(github_json(fetcher, f"/repos/{repo['full_name']}/contents/{quote(path)}?ref={sha}"))
-                    record = resource_record(repo, path, content, sha)
-                    if record:
-                        resources.append(record)
-                except RateLimited as exc:
-                    warnings.append(f"Resource budget: {exc}")
-                    data["resource_scan"] = "partial"
-                    break
-                except (FetchError, ValueError, yaml.YAMLError) as exc:
-                    warnings.append(f"Resource {path}: {type(exc).__name__}")
-                    data["resource_scan"] = "partial"
-        except FetchError as exc:
-            data["resource_scan"] = "failed"
-            warnings.append(f"Resource scan: {exc}")
+    if scan_agent_types or force_resources:
+        resources, report = scan_resources(repo, fetcher, resource_limit, tree_limit, depth_limit)
+        data["resource_scan"] = report["status"]
+        data["resource_scan_report"] = report
+        warnings.extend(report["warnings"][:20])
+    elif old.get("resource_scan_report"):
+        data["resource_scan_report"] = old["resource_scan_report"]
     with db.connect() as con:
         con.execute(
             "INSERT INTO repositories VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "

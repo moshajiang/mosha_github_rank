@@ -45,6 +45,7 @@ def main():
     project_actions.add_parser("list")
     add = project_actions.add_parser("add", help="Immediately collect one public GitHub repository")
     add.add_argument("repository")
+    add.add_argument("--scan-resources", action="store_true", help="Scan manifests even when Agent keyword classification did not match")
     edit = project_actions.add_parser("set", help="Apply a persistent local classification or visibility override")
     edit.add_argument("repository")
     edit.add_argument("--category", choices=CATEGORIES)
@@ -89,7 +90,7 @@ def main():
     elif args.command == "projects":
         try:
             if args.action == "add":
-                output = add_repository(settings, db, args.repository)
+                output = add_repository(settings, db, args.repository, force_resources=args.scan_resources)
             elif args.action == "set":
                 item = edit_repository(db, args.repository, category=args.category, agent_types=args.agent_types,
                                        excluded=args.excluded, reason=args.reason)

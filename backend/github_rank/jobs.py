@@ -16,19 +16,21 @@ def register_sources(db, config):
         db.execute("INSERT INTO sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (source["id"], dumps(source)))
 
 
-def add_repository(settings, db, name, fetcher=None):
+def add_repository(settings, db, name, fetcher=None, force_resources=False):
     """Fetch one explicit candidate immediately without competing with the daily batch."""
     name = normalize_name(name)
+    limits = settings.config().get("collection", {})
     owned = fetcher is None
-    fetcher = fetcher or Fetcher(db, settings.github_token)
+    fetcher = fetcher or Fetcher(db, settings.github_token, resource_budget=limits.get("max_resource_requests_per_batch", 300))
     run_id = uuid.uuid4().hex
     report = {"requested_name": name, "repositories": [], "errors": []}
     try:
         with db.lease("collection"):
             db.execute("INSERT INTO job_runs VALUES(?,?,?,?,?,?)", (run_id, "manual_repository", utcnow(), None, "running", dumps(report)))
             try:
-                repo = collect_repo(db, fetcher, name, settings.config().get("collection", {}).get("max_resource_files", 30))
-                report["repositories"].append({"id": repo["id"], "name": repo["full_name"], "warnings": repo["warnings"], "resource_scan": repo["resource_scan"]})
+                repo = collect_repo(db, fetcher, name, limits.get("max_resource_files", 30),
+                                    limits.get("max_tree_requests", 20), limits.get("max_tree_depth", 12), force_resources)
+                report["repositories"].append({"id": repo["id"], "name": repo["full_name"], "warnings": repo["warnings"], "resource_scan": repo["resource_scan"], "resource_scan_report": repo.get("resource_scan_report")})
             except Exception as exc:
                 report["errors"].append({"source": name, "error": str(exc)[:300]})
                 db.execute("UPDATE job_runs SET finished_at=?,status='failed',report=? WHERE id=?", (utcnow(), dumps(report), run_id))
@@ -49,7 +51,7 @@ def collect(settings, db, mode="all", discovery=True, repo_limit=None, force=Fal
     limits = config.get("collection", {})
     register_sources(db, config)
     fetcher_owned = fetcher is None
-    fetcher = fetcher or Fetcher(db, settings.github_token, cancelled=cancelled)
+    fetcher = fetcher or Fetcher(db, settings.github_token, cancelled=cancelled, resource_budget=limits.get("max_resource_requests_per_batch", 300))
     report = {"repositories": [], "sources": [], "discovery": [], "seed_lists": [], "errors": [], "token_configured": bool(settings.github_token)}
     if scheduler_instance:
         report["scheduler_instance"] = scheduler_instance
@@ -99,7 +101,8 @@ def collect(settings, db, mode="all", discovery=True, repo_limit=None, force=Fal
                 for name in names[:batch_limit]:
                     check_stop()
                     try:
-                        repo = collect_repo(db, fetcher, name, limits.get("max_resource_files", 30))
+                        repo = collect_repo(db, fetcher, name, limits.get("max_resource_files", 30),
+                                            limits.get("max_tree_requests", 20), limits.get("max_tree_depth", 12))
                         report["repositories"].append({"name": repo["full_name"], "warnings": repo["warnings"], "resource_scan": repo["resource_scan"]})
                     except Exception as exc:
                         if isinstance(exc, CollectionCancelled):

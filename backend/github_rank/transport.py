@@ -17,10 +17,16 @@ class CollectionCancelled(RuntimeError):
     pass
 
 
+class ResourceBudgetExceeded(FetchError):
+    pass
+
+
 class Fetcher:
-    def __init__(self, db, token="", transport=None, sleeper=time.sleep, cancelled=None):
+    def __init__(self, db, token="", transport=None, sleeper=time.sleep, cancelled=None, resource_budget=300):
         self.db, self.token, self.sleep = db, token, sleeper
         self.cancelled = cancelled
+        self.resource_requests = 0
+        self.resource_request_limit = min(max(int(resource_budget), 1), 10000)
         self.github_requests = 0
         self.github_blocked = set()
         self.client = httpx.Client(timeout=20, follow_redirects=True, transport=transport,
@@ -28,6 +34,12 @@ class Fetcher:
 
     def close(self):
         self.client.close()
+
+    def get_resource(self, url):
+        if self.resource_requests >= self.resource_request_limit:
+            raise ResourceBudgetExceeded("Resource request budget reached for this batch")
+        self.resource_requests += 1
+        return self.get(url)
 
     def get(self, url):
         if urlsplit(url).scheme != "https":
