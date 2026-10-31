@@ -1,0 +1,34 @@
+services:
+  web:
+    build: .
+    image: github-rank:local
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_RANK_SUMMARY_MODEL: ${GITHUB_RANK_SUMMARY_MODEL:-}
+      GITHUB_RANK_SUMMARY_URL: ${GITHUB_RANK_SUMMARY_URL:-http://127.0.0.1:11434}
+      GITHUB_RANK_SUMMARY_DAILY_LIMIT: ${GITHUB_RANK_SUMMARY_DAILY_LIMIT:-20}
+      GITHUB_RANK_AUTO_SUMMARY: ${GITHUB_RANK_AUTO_SUMMARY:-false}
+    volumes:
+      - rank-data:/app/data
+      - ./config:/app/config:ro
+    restart: unless-stopped
+  scheduler:
+    image: github-rank:local
+    build: .
+    command: ["python", "-m", "github_rank.cli", "schedule"]
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_RANK_SUMMARY_MODEL: ${GITHUB_RANK_SUMMARY_MODEL:-}
+      GITHUB_RANK_SUMMARY_URL: ${GITHUB_RANK_SUMMARY_URL:-http://127.0.0.1:11434}
+      GITHUB_RANK_SUMMARY_DAILY_LIMIT: ${GITHUB_RANK_SUMMARY_DAILY_LIMIT:-20}
+      GITHUB_RANK_AUTO_SUMMARY: ${GITHUB_RANK_AUTO_SUMMARY:-false}
+    volumes:
+      - rank-data:/app/data
+      - ./config:/app/config:ro
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+volumes:
+  rank-data:

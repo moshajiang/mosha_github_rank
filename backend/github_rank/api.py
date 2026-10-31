@@ -1,0 +1,238 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
+import json
+import os
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, Response
+from .classify import CATEGORIES, AGENT_TYPES, TOPICS
+from .db import Database, utcnow
+from .jobs import register_sources
+from .ranking import compute_rankings
+from .settings import Settings, ROOT
+from .sources import source_states
+from .summaries import annotate_summaries
+from .identity import workspace_id
+
+
+def create_app(settings=None):
+    settings = settings or Settings.from_env()
+    db = Database(settings.db_path)
+    register_sources(db, settings.config())
+    app = FastAPI(title="GitHub Rank", version="0.1.0")
+    app.state.db = db
+
+    @app.get("/api/health")
+    def health():
+        return {"status": "ok", "version": "0.1.0", "app_id": "github-rank",
+                "workspace_id": workspace_id(ROOT),
+                "instance_id": os.environ.get("GITHUB_RANK_DESKTOP_INSTANCE")}
+
+    @app.get("/api/config")
+    def config():
+        languages = sorted({json.loads(row["data"]).get("language") for row in db.rows("SELECT data FROM repositories")} - {None, ""})
+        return {"categories": CATEGORIES, "agent_types": AGENT_TYPES, "topics": TOPICS, "languages": languages}
+
+    @app.get("/api/data-status")
+    def data_status():
+        counts = {}
+        for table in ("repositories", "resources", "news", "snapshots", "summaries"):
+            counts[table] = db.rows(f"SELECT count(*) AS n FROM {table}")[0]["n"]
+        last_snapshot = db.rows("SELECT max(observed_at) AS t FROM snapshots")[0]["t"]
+        last_news = db.rows("SELECT max(fetched_at) AS t FROM news")[0]["t"]
+        jobs = db.rows("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 8")
+        for job in jobs:
+            job["report"] = json.loads(job["report"])
+        return {"as_of": utcnow(), "counts": counts, "last_snapshot": last_snapshot,
+                "last_news": last_news, "github_token_configured": bool(settings.github_token),
+                "summary_mode": "ollama" if settings.summary_model else "template", "jobs": jobs,
+                "summary_model_configured": bool(settings.summary_model),
+                "summary_daily_limit": settings.summary_daily_limit,
+                "summary_attempts_today": db.rows("SELECT count(*) AS n FROM summary_attempts WHERE day=?", (datetime.now(timezone(timedelta(hours=8))).date().isoformat(),))[0]["n"],
+                "note": "已跟踪候选池排行；不代表全部 GitHub。无完整历史时显示观察中。"}
+
+    def repositories(q="", category="", language="", agent_type="", min_stars=0, max_stars=None):
+        rows = db.rows("SELECT data,first_seen_at FROM repositories")
+        items = []
+        for row in rows:
+            repo = json.loads(row["data"])
+            repo.pop("readme_excerpt", None)
+            repo["first_seen_at"] = row["first_seen_at"]
+            haystack = (repo["full_name"] + " " + repo["description"] + " " + " ".join(repo.get("topics", []))).lower()
+            language_matches = not language or language == "__unknown__" and not repo.get("language") or repo.get("language") == language
+            if q.lower() not in haystack or category and repo["category"] != category or not language_matches:
+                continue
+            if agent_type == "any" and not repo.get("agent_types") or agent_type not in ("", "any") and agent_type not in repo.get("agent_types", []):
+                continue
+            if repo["stars"] >= min_stars and (max_stars is None or repo["stars"] <= max_stars):
+                items.append(repo)
+        return sorted(items, key=lambda r: (-r["stars"], r["id"]))
+
+    @app.get("/api/projects")
+    def projects(q: str = Query("", max_length=200), category: str = "", language: str = "",
+                 agent_type: str = "", min_stars: int = Query(0, ge=0), max_stars: int | None = Query(None, ge=0), limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+        if max_stars is not None and max_stars < min_stars:
+            raise HTTPException(422, "max_stars must be at least min_stars")
+        items = repositories(q, category, language, agent_type, min_stars, max_stars)
+        return {"items": annotate_summaries(db, items[offset:offset + limit], "project"), "total": len(items), "sort": "current_stars"}
+
+    @app.get("/api/projects/{owner}/{repo}/history")
+    def project_history(owner: str, repo: str):
+        records = db.rows("SELECT id FROM repositories WHERE full_name=? COLLATE NOCASE", (owner + "/" + repo,))
+        if not records:
+            raise HTTPException(404, "Project not found")
+        return {"items": db.rows("SELECT * FROM snapshots WHERE repo_id=? ORDER BY observed_at", (records[0]["id"],)), "method": "daily_observed_totals"}
+
+    @app.get("/api/projects/{owner}/{repo}")
+    def project_detail(owner: str, repo: str):
+        name = owner + "/" + repo
+        record = db.rows("SELECT * FROM repositories WHERE full_name=? COLLATE NOCASE", (name,))
+        if not record:
+            raise HTTPException(404, "Project not found")
+        data = json.loads(record[0]["data"])
+        annotate_summaries(db, [data], "project")
+        data.pop("readme_excerpt", None)
+        data["resources"] = [json.loads(r["data"]) for r in db.rows("SELECT data FROM resources WHERE repo_id=?", (record[0]["id"],))]
+        project_url = data["url"].rstrip("/").lower()
+        data["related_news"] = []
+        for news in db.rows("SELECT data FROM news ORDER BY published_at DESC LIMIT 1000"):
+            item = json.loads(news["data"])
+            if project_url in [u.rstrip("/").lower() for u in item.get("related_repositories", [])]:
+                data["related_news"].append(item)
+        return data
+
+    @app.get("/api/rankings")
+    def rankings(kind: Literal["hot", "potential"] = "hot", window: Literal["7d", "30d"] = "7d",
+                 category: str = "", agent_type: str = "", q: str = Query("", max_length=200),
+                 run_id: str | None = None, limit: int = Query(100, ge=1, le=500),
+                 language: str = "", min_stars: int = Query(0, ge=0), max_stars: int | None = Query(None, ge=0)):
+        if max_stars is not None and max_stars < min_stars:
+            raise HTTPException(422, "max_stars must be at least min_stars")
+        days = 7 if window == "7d" else 30
+        if run_id:
+            rows = db.rows("SELECT data FROM ranking_runs WHERE id=? AND window_days=?", (run_id, days))
+            if not rows:
+                raise HTTPException(404, "Ranking snapshot not found")
+            data = json.loads(rows[0]["data"])
+        else:
+            data = compute_rankings(db, days)
+        items = [r for r in data["items"] if (not category or r["category"] == category)
+                 and (not agent_type or agent_type == "any" and r["agent_types"] or agent_type in r["agent_types"])
+                 and q.lower() in (r["full_name"] + " " + r["description"]).lower()
+                 and (not language or language == "__unknown__" and not r.get("language") or r.get("language") == language)
+                 and r["stars"] >= min_stars and (max_stars is None or r["stars"] <= max_stars)]
+        formal = [r for r in items if r[f"{kind}_eligible"]]
+        formal.sort(key=lambda r: (-(r["potential_score"] if kind == "potential" else r["delta_stars"]), -(r["delta_forks"] or 0), r["id"]))
+        for i, r in enumerate(formal, 1):
+            r["rank"] = i
+        observed = sorted([r for r in items if not r[f"{kind}_eligible"] and not r.get("archived") and not r.get("is_fork")], key=lambda r: (-r["stars"], r["id"]))
+        if not run_id:
+            annotate_summaries(db, formal[:limit], "project")
+            annotate_summaries(db, observed[:limit], "project")
+        return {**{k: v for k, v in data.items() if k != "items"}, "kind": kind,
+                "items": formal[:limit], "total": len(formal), "observing": observed[:limit],
+                "observing_total": len(observed), "run_id": run_id,
+                "note": "观察列表按当前总 Star 排序，不是区间增长榜。"}
+
+    @app.get("/api/agent-resources")
+    def agent_resources(kind: str = "", q: str = Query("", max_length=200), limit: int = Query(100, ge=1, le=500)):
+        result = []
+        for row in db.rows("SELECT r.data,p.data AS repo_data FROM resources r JOIN repositories p ON p.id=r.repo_id ORDER BY r.updated_at DESC"):
+            item, repo = json.loads(row["data"]), json.loads(row["repo_data"])
+            if kind and item["kind"] != kind or q.lower() not in (item["name"] + " " + item["description"]).lower():
+                continue
+            item["repository_stars"] = repo["stars"]
+            result.append(item)
+        return {"items": annotate_summaries(db, result[:limit], "resource"), "total": len(result), "note": "展示关联仓库 Star，不代表单个资源的安装或使用量。"}
+
+    @app.get("/api/agent-resources/{resource_id}")
+    def resource(resource_id: str):
+        rows = db.rows("SELECT data FROM resources WHERE id=?", (resource_id,))
+        if not rows:
+            raise HTTPException(404, "Resource not found")
+        return annotate_summaries(db, [json.loads(rows[0]["data"])], "resource")[0]
+
+    @app.get("/api/news/sources")
+    def news_sources():
+        return {"items": source_states(db)}
+
+    @app.get("/api/news")
+    def news(window: Literal["24h", "7d", "30d", "all"] = "7d", topic: str = "", source: str = "",
+             sort: Literal["latest", "important"] = "latest", q: str = Query("", max_length=200),
+             limit: int = Query(100, ge=1, le=500)):
+        hours = {"24h": 24, "7d": 168, "30d": 720, "all": None}[window]
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(hours=hours)).isoformat(timespec="seconds") if hours else None
+        groups, unknown = {}, []
+        for row in db.rows("SELECT * FROM news ORDER BY published_at DESC,first_seen_at DESC"):
+            item = {**json.loads(row["data"]), "first_seen_at": row["first_seen_at"], "fetched_at": row["fetched_at"]}
+            if topic and item["topic"] != topic or source and item["source_id"] != source or q.lower() not in (item["title"] + " " + item["summary"]).lower():
+                continue
+            if not row["published_at"]:
+                unknown.append(item)
+                continue
+            if window == "24h" and item.get("published_precision") == "day":
+                unknown.append({**item, "time_note": "来源仅提供日期，不进入精确 24 小时窗口"})
+                continue
+            published = datetime.fromisoformat(row["published_at"].replace("Z", "+00:00"))
+            if published > now + timedelta(minutes=5) or cutoff and published < datetime.fromisoformat(cutoff):
+                continue
+            if row["event_key"] in groups:
+                groups[row["event_key"]]["related_reports"].append({"title": item["title"], "url": item["url"], "source_name": item["source_name"]})
+            else:
+                groups[row["event_key"]] = {**item, "related_reports": []}
+        items = list(groups.values())
+        items.sort(key=lambda r: ((r["importance"] if sort == "important" else 0), r["published_at"]), reverse=True)
+        return {"items": annotate_summaries(db, items[:limit], "news"), "total": len(items), "unknown_time": annotate_summaries(db, unknown[:limit], "news"),
+                "unknown_time_total": len(unknown), "as_of": utcnow(), "window": window,
+                "note": "按原始发布时间筛选；时间未知项单独展示。"}
+
+    @app.get("/api/news/{item_id}")
+    def news_detail(item_id: str):
+        rows = db.rows("SELECT * FROM news WHERE id=?", (item_id,))
+        if not rows:
+            raise HTTPException(404, "News item not found")
+        data = json.loads(rows[0]["data"])
+        annotate_summaries(db, [data], "news")
+        data["versions"] = db.rows("SELECT content_hash,observed_at FROM news_versions WHERE item_id=? ORDER BY observed_at", (item_id,))
+        data["related_reports"] = [json.loads(r["data"]) for r in db.rows("SELECT data FROM news WHERE event_key=? AND id!=?", (rows[0]["event_key"], item_id))]
+        return data
+
+    @app.get("/api/archives")
+    def archives():
+        return {"items": db.rows("SELECT id,created_at,window_days,algorithm FROM ranking_runs ORDER BY created_at DESC LIMIT 100")}
+
+    @app.get("/api/exports")
+    def export(run_id: str | None = None, format: Literal["json", "markdown"] = "json",
+               kind: Literal["hot", "potential"] = "hot", window: Literal["7d", "30d"] = "7d",
+               q: str = "", category: str = "", agent_type: str = "", language: str = "",
+               min_stars: int = Query(0, ge=0), max_stars: int | None = Query(None, ge=0)):
+        data = rankings(kind=kind, window=window, run_id=run_id, limit=500, q=q, category=category,
+                        agent_type=agent_type, language=language, min_stars=min_stars, max_stars=max_stars)
+        if format == "json":
+            return Response(json.dumps(data, ensure_ascii=False, indent=2), media_type="application/json",
+                            headers={"Content-Disposition": 'attachment; filename="github-rank.json"'})
+        lines = [f"# GitHub Rank · {window} · {kind}", "", f"数据截至：{data['as_of']}", ""]
+        for item in data["items"]:
+            lines.extend([f"- [{item['full_name']}]({item['url']})：净增 {item['delta_stars']} Star。{item['summary']}"])
+        if not data["items"]:
+            lines.append("完整历史不足，暂无正式榜单。")
+        return Response("\n".join(lines), media_type="text/markdown", headers={"Content-Disposition": 'attachment; filename="github-rank.md"'})
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def frontend(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(404, "Endpoint not found")
+        dist = ROOT / "frontend/dist"
+        target = (dist / path).resolve()
+        if not target.is_relative_to(dist.resolve()):
+            raise HTTPException(404)
+        if target.is_file():
+            return FileResponse(target)
+        if (dist / "index.html").exists():
+            return FileResponse(dist / "index.html")
+        return {"message": "Build frontend with npm run build in frontend/", "api_docs": "/docs"}
+
+    return app

@@ -1,0 +1,60 @@
+repositories:
+  - langchain-ai/langgraph
+  - microsoft/autogen
+  - crewAIInc/crewAI
+  - modelcontextprotocol/servers
+  - anthropics/skills
+  - vercel-labs/skills
+  - github/awesome-copilot
+  - sansan0/TrendRadar
+  - DIYgod/RSSHub
+  - miniflux/v2
+  - fastapi/fastapi
+  - vitejs/vite
+
+# Candidate URLs only; descriptions are obtained from the original repositories.
+seed_lists:
+  - https://raw.githubusercontent.com/modelcontextprotocol/servers/main/README.md
+
+# Small bounded discovery pool; expand after measuring the live request budget.
+queries:
+  - 'topic:ai-agents stars:50..20000 archived:false fork:false'
+  - 'topic:agent-skills stars:10..20000 archived:false fork:false'
+  - 'topic:model-context-protocol stars:50..20000 archived:false fork:false'
+  - 'topic:developer-tools stars:50..20000 archived:false fork:false'
+  - 'stars:20..2000 created:>={recent_30} archived:false fork:false'
+  - 'stars:200..20000 pushed:>={recent_7} archived:false fork:false'
+
+news_sources:
+  - id: anthropic
+    name: Anthropic
+    kind: official
+    adapter: html
+    url: https://www.anthropic.com/news
+    article_pattern: '^/news/[^/?#]+/?$'
+    interval_minutes: 30
+  - id: deepmind
+    name: Google DeepMind
+    kind: official
+    adapter: feed
+    url: https://deepmind.google/blog/rss.xml
+    interval_minutes: 30
+  - id: huggingface
+    name: Hugging Face Blog
+    kind: official
+    adapter: feed
+    url: https://huggingface.co/blog/feed.xml
+    interval_minutes: 60
+  - id: arxiv
+    name: arXiv · AI / NLP / ML
+    kind: paper
+    adapter: feed
+    url: https://rss.arxiv.org/rss/cs.AI+cs.CL+cs.LG
+    interval_minutes: 360
+
+collection:
+  search_per_query: 20
+  max_repositories: 200
+  max_resource_files: 30
+  news_items_per_source: 25
+  release_repositories: 3
