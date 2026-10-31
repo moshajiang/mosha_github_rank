@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import math
 from .db import dumps, utcnow
+from .repositories import overrides_by_repo, apply_override
 
 
 ALGORITHM = "potential-v1"
@@ -37,8 +38,14 @@ def compute_rankings(db, window=7, as_of=None):
         if dt(row["observed_at"]) <= timestamp + timedelta(hours=6):
             by_repo[row["repo_id"]].append(row)
     result = []
-    for record in db.rows("SELECT * FROM repositories"):
-        repo = json.loads(record["data"])
+    records = db.rows("SELECT * FROM repositories")
+    overrides = overrides_by_repo(db)
+    excluded_count = 0
+    for record in records:
+        repo = apply_override(json.loads(record["data"]), overrides.get(record["id"]))
+        if repo["ranking_excluded"]:
+            excluded_count += 1
+            continue
         repo.pop("readme_excerpt", None)
         snapshots = by_repo[record["id"]]
         end = nearest(snapshots, timestamp)
@@ -101,7 +108,7 @@ def compute_rankings(db, window=7, as_of=None):
         repo.pop("_features", None)
     return {
         "as_of": timestamp.isoformat(timespec="seconds"), "window_days": window,
-        "algorithm": ALGORITHM, "tracked_count": len(result),
+        "algorithm": ALGORITHM, "tracked_count": len(records), "excluded_count": excluded_count,
         "stale": (datetime.now(timezone.utc) - timestamp).total_seconds() > 36 * 3600,
         "items": result,
     }

@@ -3,11 +3,13 @@ import json
 import time
 import sys
 from .db import Database
-from .jobs import collect, register_sources
+from .jobs import collect, register_sources, add_repository
 from .ranking import publish_rankings
 from .settings import Settings
 from .sources import source_states, set_enabled
 from .summaries import summarize
+from .classify import CATEGORIES, AGENT_TYPES
+from .repositories import repository_items, edit_repository, edit_history
 
 
 def main():
@@ -32,6 +34,24 @@ def main():
     sources = commands.add_parser("sources")
     sources.add_argument("action", choices=["list", "enable", "disable"], default="list", nargs="?")
     sources.add_argument("source_id", nargs="?")
+    projects = commands.add_parser("projects", help="Manage tracked repositories and local curation")
+    project_actions = projects.add_subparsers(dest="action", required=True)
+    project_actions.add_parser("list")
+    add = project_actions.add_parser("add", help="Immediately collect one public GitHub repository")
+    add.add_argument("repository")
+    edit = project_actions.add_parser("set", help="Apply a persistent local classification or visibility override")
+    edit.add_argument("repository")
+    edit.add_argument("--category", choices=CATEGORIES)
+    edit.add_argument("--agent-types", nargs="*", choices=AGENT_TYPES, help="Replace all Agent types; no values clears them")
+    visibility = edit.add_mutually_exclusive_group()
+    visibility.add_argument("--exclude", dest="excluded", action="store_const", const=True, default=None)
+    visibility.add_argument("--include", dest="excluded", action="store_const", const=False)
+    edit.add_argument("--reason", required=True)
+    reset = project_actions.add_parser("reset", help="Remove overrides and use the current automatic classification")
+    reset.add_argument("repository")
+    reset.add_argument("--reason", required=True)
+    history = project_actions.add_parser("history")
+    history.add_argument("repository")
     args = parser.parse_args()
     settings = Settings.from_env()
     db = Database(settings.db_path)
@@ -60,6 +80,25 @@ def main():
             except ValueError as exc:
                 parser.error(str(exc))
         print(json.dumps(source_states(db), ensure_ascii=False, indent=2))
+    elif args.command == "projects":
+        try:
+            if args.action == "add":
+                output = add_repository(settings, db, args.repository)
+            elif args.action == "set":
+                item = edit_repository(db, args.repository, category=args.category, agent_types=args.agent_types,
+                                       excluded=args.excluded, reason=args.reason)
+                output = {k: item[k] for k in ("id", "full_name", "category", "agent_types", "ranking_excluded", "classification")}
+            elif args.action == "reset":
+                item = edit_repository(db, args.repository, reason=args.reason, reset=True)
+                output = {k: item[k] for k in ("id", "full_name", "category", "agent_types", "ranking_excluded", "classification")}
+            elif args.action == "history":
+                output = edit_history(db, args.repository)
+            else:
+                output = [{k: item[k] for k in ("id", "full_name", "category", "agent_types", "ranking_excluded", "classification")}
+                          for item in repository_items(db, include_excluded=True)]
+        except (ValueError, RuntimeError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(output, ensure_ascii=False, indent=2))
     else:
         while True:
             # News sources have their own persisted due times; repository/release jobs run once daily after 08:00 CST.

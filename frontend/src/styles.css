@@ -1321,6 +1321,50 @@ select {
   align-self: flex-start;
   flex-shrink: 0;
 }
+.curation-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 15px 18px;
+  border: 1px solid #d8e7dd;
+  border-radius: 8px;
+  background: #f0f7f2;
+  color: #42624e;
+  font-size: 12px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+  flex-wrap: wrap;
+}
+.curation-notice > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.curation-notice > div {
+  flex: 1;
+  min-width: 180px;
+}
+.curation-notice button {
+  margin-left: auto;
+}
+.curation-notice .text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--green);
+  padding: 2px 0;
+}
+.curation-notice p {
+  margin: 4px 0 0;
+}
+.curation-notice.excluded {
+  border-color: #eadfc6;
+  background: #fbf7ed;
+  color: #806337;
+}
+.detail-panel dd {
+  overflow-wrap: anywhere;
+}
 .detail-metrics {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

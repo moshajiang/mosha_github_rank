@@ -88,6 +88,27 @@ PRAGMA user_version=2;
 COMMIT;
 """
 
+MIGRATION_3 = """
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS repository_aliases (
+ full_name TEXT PRIMARY KEY COLLATE NOCASE,
+ repo_id INTEGER NOT NULL REFERENCES repositories(id), observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repository_alias_repo ON repository_aliases(repo_id);
+CREATE TABLE IF NOT EXISTS repository_overrides (
+ repo_id INTEGER PRIMARY KEY REFERENCES repositories(id), category TEXT,
+ agent_types TEXT, excluded INTEGER NOT NULL DEFAULT 0 CHECK(excluded IN (0,1)),
+ reason TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS repository_edits (
+ id TEXT PRIMARY KEY, repo_id INTEGER NOT NULL REFERENCES repositories(id),
+ action TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repository_edits_repo ON repository_edits(repo_id,created_at);
+PRAGMA user_version=3;
+COMMIT;
+"""
+
 
 class Database:
     def __init__(self, path):
@@ -96,13 +117,16 @@ class Database:
         with self.connect() as con:
             con.execute("PRAGMA journal_mode=WAL")
             version = con.execute("PRAGMA user_version").fetchone()[0]
-            if version > 2:
+            if version > 3:
                 raise RuntimeError("Database schema is newer than this application")
             if version == 0:
                 con.executescript(SCHEMA)
                 version = 1
             if version == 1:
                 con.executescript(MIGRATION_2)
+                version = 2
+            if version == 2:
+                con.executescript(MIGRATION_3)
 
     @contextmanager
     def connect(self):

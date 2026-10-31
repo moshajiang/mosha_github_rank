@@ -8,11 +8,36 @@ from .news import build_item, collect_source, store_item, parse_feed
 from .ranking import publish_rankings
 from .transport import Fetcher, RateLimited
 from .sources import source_enabled
+from .repositories import normalize_name
 
 
 def register_sources(db, config):
     for source in config.get("news_sources", []):
         db.execute("INSERT INTO sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (source["id"], dumps(source)))
+
+
+def add_repository(settings, db, name, fetcher=None):
+    """Fetch one explicit candidate immediately without competing with the daily batch."""
+    name = normalize_name(name)
+    owned = fetcher is None
+    fetcher = fetcher or Fetcher(db, settings.github_token)
+    run_id = uuid.uuid4().hex
+    report = {"requested_name": name, "repositories": [], "errors": []}
+    try:
+        with db.lease("collection"):
+            db.execute("INSERT INTO job_runs VALUES(?,?,?,?,?,?)", (run_id, "manual_repository", utcnow(), None, "running", dumps(report)))
+            try:
+                repo = collect_repo(db, fetcher, name, settings.config().get("collection", {}).get("max_resource_files", 30))
+                report["repositories"].append({"id": repo["id"], "name": repo["full_name"], "warnings": repo["warnings"], "resource_scan": repo["resource_scan"]})
+            except Exception as exc:
+                report["errors"].append({"source": name, "error": str(exc)[:300]})
+                db.execute("UPDATE job_runs SET finished_at=?,status='failed',report=? WHERE id=?", (utcnow(), dumps(report), run_id))
+                raise
+            db.execute("UPDATE job_runs SET finished_at=?,status='ok',report=? WHERE id=?", (utcnow(), dumps(report), run_id))
+            return {"id": run_id, "status": "ok", **report}
+    finally:
+        if owned:
+            fetcher.close()
 
 
 def collect(settings, db, mode="all", discovery=True, repo_limit=None, force=False, fetcher=None):

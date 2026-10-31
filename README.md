@@ -4,6 +4,8 @@
 
 当前阶段：已完成首个本地版本及第二阶段增强，实采 100 个仓库、51 个 Agent 资源和 111 条资讯。支持语言/Star 筛选、来源启停、可选 Ollama 中文摘要。完整增长榜等待历史积累；当前没有运行中的模型服务，尚未生成真实模型摘要。
 
+最新进展（2026-10-31）：新增手动跟踪仓库、人工分类/Agent 标签修订、排除与恢复、修订审计及仓库改名别名。数据库升级到 v3，真实数据升级前已备份，旧详情链接和历史记录可继续访问。
+
 - [竞品调研](docs/RESEARCH.md)
 - [开发方案](docs/DEVELOPMENT_PLAN.md)
 - [AI 前沿资讯方案](docs/AI_NEWS_PLAN.md)
@@ -11,6 +13,7 @@
 - [成熟方案借鉴与实施状态](docs/IMPLEMENTATION.md)
 - [验证报告与已知限制](docs/VALIDATION.md)
 - [中文摘要配置与调用](docs/SUMMARIES.md)
+- [项目跟踪、人工修订与改名](docs/CURATION.md)
 
 首版方向：分类周榜/月榜、潜力榜、AI Agent 独立专栏、AI 前沿资讯、中文简要介绍与原始来源链接。榜单使用可追溯的统计周期；数据不足时显示观察状态。资讯按来源节奏定时更新，支持去重、分类与关联项目发现。
 
@@ -98,3 +101,14 @@ Windows 受限沙箱中，pytest 临时目录需指定到工作区，例如 `--b
 ```
 
 来源启停保存在数据库，优先于配置默认值。中文摘要的引用校验、缓存、输入变化失效、每日调用上限和配置示例见 [摘要说明](docs/SUMMARIES.md)。网页仍只提供读取，管理操作经本机命令执行。
+
+## 手动跟踪与项目维护
+
+```powershell
+.\.venv\Scripts\python.exe -m github_rank.cli projects add https://github.com/owner/repository
+.\.venv\Scripts\python.exe -m github_rank.cli projects set owner/repository --category devtools --agent-types coding --reason '核对项目用途'
+.\.venv\Scripts\python.exe -m github_rank.cli projects set owner/repository --exclude --reason '暂不关注'
+.\.venv\Scripts\python.exe -m github_rank.cli projects reset owner/repository --reason '恢复默认'
+```
+
+人工修订在采集刷新后继续生效；排除保留历史和已发布榜单，改名后旧链接仍可解析到同一个仓库 ID。完整命令、恢复方式和限制见 [项目维护说明](docs/CURATION.md)。

@@ -15,6 +15,7 @@ from .settings import Settings, ROOT
 from .sources import source_states
 from .summaries import annotate_summaries
 from .identity import workspace_id
+from .repositories import repository_items, resolve_repository, overrides_by_repo, apply_override, canonical_resource
 
 
 def create_app(settings=None):
@@ -23,6 +24,15 @@ def create_app(settings=None):
     register_sources(db, settings.config())
     app = FastAPI(title="GitHub Rank", version="0.1.0")
     app.state.db = db
+
+    def lookup_repository(name):
+        try:
+            record = resolve_repository(db, name)
+        except ValueError:
+            record = None
+        if not record:
+            raise HTTPException(404, "Project not found")
+        return record
 
     @app.get("/api/health")
     def health():
@@ -54,12 +64,9 @@ def create_app(settings=None):
                 "note": "已跟踪候选池排行；不代表全部 GitHub。无完整历史时显示观察中。"}
 
     def repositories(q="", category="", language="", agent_type="", min_stars=0, max_stars=None):
-        rows = db.rows("SELECT data,first_seen_at FROM repositories")
         items = []
-        for row in rows:
-            repo = json.loads(row["data"])
+        for repo in repository_items(db):
             repo.pop("readme_excerpt", None)
-            repo["first_seen_at"] = row["first_seen_at"]
             haystack = (repo["full_name"] + " " + repo["description"] + " " + " ".join(repo.get("topics", []))).lower()
             language_matches = not language or language == "__unknown__" and not repo.get("language") or repo.get("language") == language
             if q.lower() not in haystack or category and repo["category"] != category or not language_matches:
@@ -80,26 +87,26 @@ def create_app(settings=None):
 
     @app.get("/api/projects/{owner}/{repo}/history")
     def project_history(owner: str, repo: str):
-        records = db.rows("SELECT id FROM repositories WHERE full_name=? COLLATE NOCASE", (owner + "/" + repo,))
-        if not records:
-            raise HTTPException(404, "Project not found")
-        return {"items": db.rows("SELECT * FROM snapshots WHERE repo_id=? ORDER BY observed_at", (records[0]["id"],)), "method": "daily_observed_totals"}
+        record = lookup_repository(owner + "/" + repo)
+        return {"items": db.rows("SELECT * FROM snapshots WHERE repo_id=? ORDER BY observed_at", (record["id"],)),
+                "full_name": record["full_name"], "method": "daily_observed_totals"}
 
     @app.get("/api/projects/{owner}/{repo}")
     def project_detail(owner: str, repo: str):
         name = owner + "/" + repo
-        record = db.rows("SELECT * FROM repositories WHERE full_name=? COLLATE NOCASE", (name,))
-        if not record:
-            raise HTTPException(404, "Project not found")
-        data = json.loads(record[0]["data"])
+        record = lookup_repository(name)
+        data = apply_override(json.loads(record["data"]), overrides_by_repo(db).get(record["id"]))
         annotate_summaries(db, [data], "project")
         data.pop("readme_excerpt", None)
-        data["resources"] = [json.loads(r["data"]) for r in db.rows("SELECT data FROM resources WHERE repo_id=?", (record[0]["id"],))]
+        data["requested_name"] = name
+        data["aliases"] = [r["full_name"] for r in db.rows("SELECT full_name FROM repository_aliases WHERE repo_id=? ORDER BY full_name", (record["id"],))]
+        data["resources"] = [canonical_resource(json.loads(r["data"]), data) for r in db.rows("SELECT data FROM resources WHERE repo_id=?", (record["id"],))]
         project_url = data["url"].rstrip("/").lower()
+        project_urls = {project_url, *("https://github.com/" + alias.lower() for alias in data["aliases"])}
         data["related_news"] = []
         for news in db.rows("SELECT data FROM news ORDER BY published_at DESC LIMIT 1000"):
             item = json.loads(news["data"])
-            if project_url in [u.rstrip("/").lower() for u in item.get("related_repositories", [])]:
+            if project_urls.intersection(u.rstrip("/").lower() for u in item.get("related_repositories", [])):
                 data["related_news"].append(item)
         return data
 
@@ -139,8 +146,12 @@ def create_app(settings=None):
     @app.get("/api/agent-resources")
     def agent_resources(kind: str = "", q: str = Query("", max_length=200), limit: int = Query(100, ge=1, le=500)):
         result = []
+        overrides = overrides_by_repo(db)
         for row in db.rows("SELECT r.data,p.data AS repo_data FROM resources r JOIN repositories p ON p.id=r.repo_id ORDER BY r.updated_at DESC"):
             item, repo = json.loads(row["data"]), json.loads(row["repo_data"])
+            if overrides.get(repo["id"], {}).get("excluded"):
+                continue
+            item = canonical_resource(item, repo)
             if kind and item["kind"] != kind or q.lower() not in (item["name"] + " " + item["description"]).lower():
                 continue
             item["repository_stars"] = repo["stars"]
@@ -149,10 +160,10 @@ def create_app(settings=None):
 
     @app.get("/api/agent-resources/{resource_id}")
     def resource(resource_id: str):
-        rows = db.rows("SELECT data FROM resources WHERE id=?", (resource_id,))
+        rows = db.rows("SELECT r.data,p.data AS repo_data FROM resources r JOIN repositories p ON p.id=r.repo_id WHERE r.id=?", (resource_id,))
         if not rows:
             raise HTTPException(404, "Resource not found")
-        return annotate_summaries(db, [json.loads(rows[0]["data"])], "resource")[0]
+        return annotate_summaries(db, [canonical_resource(json.loads(rows[0]["data"]), json.loads(rows[0]["repo_data"]))], "resource")[0]
 
     @app.get("/api/news/sources")
     def news_sources():

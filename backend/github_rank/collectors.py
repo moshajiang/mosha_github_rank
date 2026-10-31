@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from .classify import classify_repo, CATEGORIES
 from .db import dumps, utcnow
 from .transport import FetchError, RateLimited
+from .repositories import normalize_name, apply_override, record_aliases
 
 
 REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -108,19 +109,23 @@ def resource_record(repo, path, text, sha):
 
 
 def collect_repo(db, fetcher, name, resource_limit=30):
-    if not REPO_NAME.fullmatch(name):
-        raise ValueError("Invalid repository name")
+    name = normalize_name(name)
     fallback_reason = None
     try:
         repo = github_json(fetcher, f"/repos/{name}")
     except RateLimited as exc:
         fallback_reason = str(exc)
         repo = github_page_data(fetcher, name)
+    if repo.get("private") or repo.get("visibility", "public") != "public":
+        raise FetchError("Only public repositories can be tracked")
     now = utcnow()
     category, agent_types = classify_repo(repo)
     # Retain a good previous README when content is temporarily unavailable.
     previous = db.rows("SELECT data FROM repositories WHERE id=?", (repo["id"],))
     old = json.loads(previous[0]["data"]) if previous else {}
+    overrides = db.rows("SELECT * FROM repository_overrides WHERE repo_id=?", (repo["id"],))
+    override = overrides[0] if overrides else None
+    scan_agent_types = apply_override({"category": category, "agent_types": agent_types}, override)["agent_types"]
     warnings = []
     if fallback_reason:
         warnings.append("API 限流，使用公开页面中的精确计数；缺失字段不推测")
@@ -150,7 +155,7 @@ def collect_repo(db, fetcher, name, resource_limit=30):
         "data_source": repo.get("_data_source", "github_api"),
     }
     resources = []
-    if agent_types and repo.get("_data_source") and repo.get("_sha"):
+    if scan_agent_types and repo.get("_data_source") and repo.get("_sha"):
         sha = repo["_sha"]
         paths = []
         for anchor in repo["_soup"].select('.markdown-body a[href]'):
@@ -175,7 +180,7 @@ def collect_repo(db, fetcher, name, resource_limit=30):
                     resources.append(record)
             except (FetchError, ValueError, yaml.YAMLError) as exc:
                 warnings.append(f"Resource {path}: {type(exc).__name__}")
-    elif agent_types:
+    elif scan_agent_types:
         try:
             branch = github_json(fetcher, f"/repos/{repo['full_name']}/branches/{quote(repo['default_branch'], safe='')}")
             sha = branch["commit"]["sha"]
@@ -206,6 +211,7 @@ def collect_repo(db, fetcher, name, resource_limit=30):
             "full_name=excluded.full_name,category=excluded.category,agent_types=excluded.agent_types,data=excluded.data,updated_at=excluded.updated_at",
             (repo["id"], repo["full_name"], category, dumps(agent_types), dumps(data), now, now),
         )
+        record_aliases(con, repo["id"], repo["full_name"], [name, old.get("full_name")], now)
         # First successful observation per UTC day is immutable; reruns never fabricate growth.
         con.execute("INSERT OR IGNORE INTO snapshots VALUES(?,?,?,?,?)", (repo["id"], now[:10], now, repo["stargazers_count"], repo["forks_count"]))
         if data["resource_scan"] == "complete":
@@ -213,4 +219,4 @@ def collect_repo(db, fetcher, name, resource_limit=30):
         for record in resources:
             con.execute("INSERT INTO resources VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",
                         (record["id"], repo["id"], record["path"], record["kind"], dumps(record), now))
-    return data
+    return apply_override(data, override)

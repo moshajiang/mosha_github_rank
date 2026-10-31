@@ -67,6 +67,15 @@ type Repo = SummaryFields & {
   period_start?: string;
   period_end?: string;
   resource_scan?: string;
+  ranking_excluded?: boolean;
+  requested_name?: string;
+  aliases?: string[];
+  classification?: {
+    method: "manual" | "rules";
+    automatic: { category: string; agent_types: string[] };
+    reason: string | null;
+    updated_at: string | null;
+  };
   score_scope?: string;
   score_peer_count?: number;
   data_source?: string;
@@ -380,6 +389,7 @@ function App() {
       <p className="repo-description">{repo.summary_zh || repo.description}</p>
       <SummaryEvidence meta={repo.summary_meta} />
       <div className="repo-tags">
+        {repo.classification?.method === "manual" && <span>人工修订</span>}
         {repo.agent_types.slice(0, 2).map((t) => (
           <span key={t}>{cfg?.agent_types[t] || t}</span>
         ))}
@@ -1552,15 +1562,15 @@ function ProjectDetail({
   const history = useLoad<{
     items: { observed_at: string; stars: number; day: string }[];
   }>("/api/projects/" + name + "/history", revision);
+  const repo = detail.data;
   const ranking = useLoad<Ranking>(
-    "/api/rankings?window=7d&q=" + encodeURIComponent(name),
+    "/api/rankings?window=7d&q=" + encodeURIComponent(repo?.full_name || name),
     revision,
   );
-  const repo = detail.data;
   const metrics = [
     ...(ranking.data?.items || []),
     ...(ranking.data?.observing || []),
-  ].find((r) => r.full_name.toLowerCase() === name.toLowerCase());
+  ].find((r) => r.id === repo?.id);
   if (!repo)
     return (
       <>
@@ -1623,19 +1633,51 @@ function ProjectDetail({
           )}
         </div>
       </div>
+      {repo.requested_name &&
+        repo.requested_name.toLowerCase() !== repo.full_name.toLowerCase() && (
+          <div className="curation-notice" role="status">
+            <History size={16} />
+            <div>
+              仓库已更名为 {repo.full_name}。旧链接仍可查看同一仓库的历史记录。
+            </div>
+            <button
+              className="text-link"
+              onClick={() => navigate("/projects/" + repo.full_name)}
+            >
+              打开当前地址 <ArrowRight size={13} />
+            </button>
+          </div>
+        )}
+      {repo.ranking_excluded && (
+        <div className="curation-notice excluded" role="status">
+          <AlertCircle size={16} />
+          <div>
+            已从当前项目列表、榜单和资源目录排除，历史记录保留。
+            {repo.classification?.reason && (
+              <p>修订说明：{repo.classification.reason}</p>
+            )}
+          </div>
+        </div>
+      )}
       <section className="detail-metrics">
         {[
           ["当前 Star", number(repo.stars)],
           ["当前 Fork", number(repo.forks)],
           [
             "近 7 天净增",
-            metrics?.delta_stars != null ? "+" + metrics.delta_stars : "观察中",
+            repo.ranking_excluded
+              ? "已排除"
+              : metrics?.delta_stars != null
+                ? (metrics.delta_stars > 0 ? "+" : "") + metrics.delta_stars
+                : "观察中",
           ],
           [
             "潜力分",
-            metrics?.potential_score != null
-              ? String(metrics.potential_score)
-              : "待积累",
+            repo.ranking_excluded
+              ? "已排除"
+              : metrics?.potential_score != null
+                ? String(metrics.potential_score)
+                : "待积累",
           ],
         ].map(([label, value]) => (
           <div key={label}>
@@ -1654,6 +1696,38 @@ function ProjectDetail({
             <span className="method-tag">
               中文模板 · 功能以作者原始介绍为准
             </span>
+          )}
+          {repo.classification && (
+            <>
+              <h3>分类依据</h3>
+              <dl>
+                <dt>当前分类</dt>
+                <dd>
+                  {cfg?.categories[repo.category] || repo.category} ·{" "}
+                  {repo.classification.method === "manual"
+                    ? "人工修订"
+                    : "自动规则"}
+                </dd>
+                {repo.classification.method === "manual" && (
+                  <>
+                    <dt>自动识别</dt>
+                    <dd>
+                      {cfg?.categories[
+                        repo.classification.automatic.category
+                      ] || repo.classification.automatic.category}{" "}
+                      ·{" "}
+                      {repo.classification.automatic.agent_types
+                        .map((t) => cfg?.agent_types[t] || t)
+                        .join(" / ") || "无 Agent 标签"}
+                    </dd>
+                    <dt>修订说明</dt>
+                    <dd>{repo.classification.reason}</dd>
+                    <dt>修订时间</dt>
+                    <dd>{time(repo.classification.updated_at || undefined)}</dd>
+                  </>
+                )}
+              </dl>
+            </>
           )}
           <h3>观测依据</h3>
           <dl>
