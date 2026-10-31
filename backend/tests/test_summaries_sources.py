@@ -96,7 +96,7 @@ def test_schema_migration_preserves_existing_repositories(tmp_path):
         con.executescript(SCHEMA)
         con.execute("INSERT INTO repositories VALUES(1,'owner/repo','ai','[]','{}','old','old')")
     db = Database(path)
-    assert db.rows("PRAGMA user_version")[0]["user_version"] == 3
+    assert db.rows("PRAGMA user_version")[0]["user_version"] == 4
     assert db.rows("SELECT count(*) AS n FROM repositories")[0]["n"] == 1
     assert db.rows("SELECT * FROM summaries") == []
 

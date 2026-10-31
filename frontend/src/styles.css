@@ -1513,6 +1513,54 @@ select {
   margin-top: 23px;
   background: #f8faf8;
 }
+.scheduler-panel {
+  margin-top: 22px;
+  padding: 17px;
+  border: 1px solid #dce9df;
+  border-radius: 8px;
+  background: #f6faf7;
+}
+.scheduler-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.scheduler-heading h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 13px;
+  color: #426c52;
+  font-weight: 500;
+}
+.scheduler-panel dl {
+  display: grid;
+  grid-template-columns: 94px minmax(0, 1fr);
+  gap: 12px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: #718779;
+  margin: 18px 0;
+}
+.scheduler-panel dd {
+  margin: 0;
+  color: #426c52;
+  overflow-wrap: anywhere;
+}
+.scheduler-help {
+  font-size: 10px;
+  color: #82968a;
+  line-height: 1.9;
+  margin: 12px 0 0;
+}
+.runtime-warning {
+  font-size: 11px;
+  color: #9b713c;
+  line-height: 1.8;
+  margin: 10px 0;
+}
 .modal-summary > span {
   display: flex;
   align-items: center;

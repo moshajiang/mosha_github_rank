@@ -120,6 +120,34 @@ type Source = {
   item_count: number;
   enabled?: boolean;
   effective_status?: string;
+  freshness?: "fresh" | "stale" | "never" | "paused";
+  next_due_at?: string | null;
+  cadence_note?: string;
+  consecutive_failures?: number;
+  last_recovered_at?: string | null;
+};
+type RuntimeStatus = {
+  scheduler: {
+    status: string;
+    online: boolean;
+    current_mode?: string | null;
+    heartbeat_at?: string;
+    started_at?: string;
+    next_check_at: string | null;
+    next_repository_at: string | null;
+    last_cycle_at?: string | null;
+    last_result?: string | null;
+    error?: string | null;
+  };
+  repositories_stale: boolean;
+  oldest_repository_update: string | null;
+  source_events: {
+    id: string;
+    source_name: string;
+    kind: string;
+    occurred_at: string;
+    error: string | null;
+  }[];
 };
 type Config = {
   categories: Record<string, string>;
@@ -232,6 +260,13 @@ function App() {
   const [route, setRoute] = useState(location.pathname + location.search);
   const [revision, setRevision] = useState(0);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [runtimeRevision, setRuntimeRevision] = useState(0);
+  useEffect(() => {
+    if (!sourcesOpen) return;
+    setRuntimeRevision((r) => r + 1);
+    const timer = setInterval(() => setRuntimeRevision((r) => r + 1), 15000);
+    return () => clearInterval(timer);
+  }, [sourcesOpen]);
   const [sidebar, setSidebar] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [saved, setSaved] = useState<Saved[]>(() => {
@@ -266,8 +301,18 @@ function App() {
   const minStars = params.get("min_stars") || "";
   const maxStars = params.get("max_stars") || "";
   const config = useLoad<Config>("/api/config", revision);
-  const status = useLoad<Status>("/api/data-status", revision);
-  const sources = useLoad<{ items: Source[] }>("/api/news/sources", revision);
+  const status = useLoad<Status>(
+    "/api/data-status",
+    revision + runtimeRevision,
+  );
+  const sources = useLoad<{ items: Source[] }>(
+    "/api/news/sources",
+    revision + runtimeRevision,
+  );
+  const runtime = useLoad<RuntimeStatus>(
+    "/api/runtime-status",
+    revision + runtimeRevision,
+  );
   const rankedParams = new URLSearchParams({
     kind,
     window: window === "30d" ? "30d" : "7d",
@@ -866,7 +911,11 @@ function App() {
                       <Radio size={18} className="green-text" />
                       AI 前沿速览
                     </h2>
-                    <span className="live-pill">持续同步</span>
+                    <span className="live-pill">
+                      {runtime.data?.scheduler.online
+                        ? "定时采集中"
+                        : "本地资讯"}
+                    </span>
                   </div>
                   <div className="news-panel-subtitle">
                     近 7 天 · 官方发布与研究进展
@@ -1388,6 +1437,91 @@ function App() {
                 <X size={21} />
               </button>
             </div>
+            <div className="scheduler-panel">
+              <div className="scheduler-heading">
+                <h3>
+                  <Clock3 size={16} /> 定时采集
+                </h3>
+                <span
+                  className={
+                    "source-status " +
+                    (runtime.data?.scheduler.online ? "ok" : "paused")
+                  }
+                >
+                  {runtime.loading && !runtime.data
+                    ? "读取中"
+                    : {
+                        running: runtime.data?.scheduler.current_mode
+                          ? "采集中"
+                          : "运行中",
+                        stopping: "正在停止",
+                        stopped: "已停止",
+                        stale: "心跳中断",
+                        failed: "异常退出",
+                        never: "未启动",
+                      }[runtime.data?.scheduler.status || "never"] ||
+                      "状态未知"}
+                </span>
+              </div>
+              <Loading state={runtime} />
+              <dl>
+                <dt>最近心跳</dt>
+                <dd>
+                  {runtime.data?.scheduler.heartbeat_at
+                    ? time(runtime.data.scheduler.heartbeat_at)
+                    : "暂无心跳"}
+                </dd>
+                <dt>下次检查</dt>
+                <dd>
+                  {runtime.data?.scheduler.next_check_at
+                    ? time(runtime.data.scheduler.next_check_at)
+                    : runtime.data?.scheduler.current_mode &&
+                        runtime.data.scheduler.online
+                      ? "本轮完成后安排"
+                      : "暂无计划"}
+                </dd>
+                <dt>每日仓库采集</dt>
+                <dd>
+                  {runtime.data?.scheduler.next_repository_at
+                    ? new Date(
+                        runtime.data.scheduler.next_repository_at,
+                      ).getTime() < Date.now()
+                      ? "已到期，随本轮检查执行"
+                      : time(runtime.data.scheduler.next_repository_at)
+                    : "启动调度后安排"}
+                </dd>
+                <dt>最近一轮</dt>
+                <dd>
+                  {runtime.data?.scheduler.last_result
+                    ? ({
+                        ok: "完成",
+                        partial: "部分完成",
+                        failed: "失败",
+                        deferred: "等待其他采集任务",
+                        cancelled: "已取消",
+                      }[runtime.data.scheduler.last_result] ||
+                        runtime.data.scheduler.last_result) +
+                      " · " +
+                      time(runtime.data.scheduler.last_cycle_at)
+                    : "尚无记录"}
+                </dd>
+              </dl>
+              {runtime.data?.scheduler.error && (
+                <p className="runtime-warning">
+                  最近错误：{runtime.data.scheduler.error}
+                </p>
+              )}
+              {runtime.data?.repositories_stale && (
+                <p className="runtime-warning">
+                  部分仓库已超过 36 小时未更新，请检查采集任务。
+                </p>
+              )}
+              <p className="scheduler-help">
+                双击“启动采集.cmd” /
+                “停止采集.cmd”控制后台任务。网页服务独立运行；此面板每 15
+                秒更新。
+              </p>
+            </div>
             <div className="modal-summary">
               <span>
                 <Github size={17} />
@@ -1422,20 +1556,53 @@ function App() {
                         ? "已暂停采集，保留已有内容。"
                         : s.error || `最后成功：${time(s.last_success_at)}`}
                     </small>
+                    {s.enabled !== false && (
+                      <small>
+                        {s.cadence_note}
+                        {s.next_due_at
+                          ? ` · ${new Date(s.next_due_at).getTime() < Date.now() ? "已到检查时间" : "下次 " + time(s.next_due_at)}`
+                          : ""}
+                        {!!s.consecutive_failures &&
+                          ` · 连续失败 ${s.consecutive_failures} 次`}
+                        {s.last_recovered_at &&
+                          ` · 最近恢复 ${time(s.last_recovered_at)}`}
+                      </small>
+                    )}
                   </div>
                   <span
                     className={
-                      "source-status " + (s.effective_status || s.status)
+                      "source-status " +
+                      (s.freshness === "stale"
+                        ? "error"
+                        : s.effective_status || s.status)
                     }
                   >
                     {s.enabled === false
                       ? "已暂停"
-                      : s.status === "ok"
-                        ? "已同步"
-                        : s.status === "error"
-                          ? "需检查"
-                          : "待采集"}
+                      : s.freshness === "stale"
+                        ? "数据过期"
+                        : s.status === "ok"
+                          ? "已同步"
+                          : s.status === "error"
+                            ? "需检查"
+                            : "待采集"}
                   </span>
+                </div>
+              ))}
+            </div>
+            <h3 className="jobs-title">来源故障与恢复</h3>
+            <div className="jobs-list">
+              {!runtime.data?.source_events.length && (
+                <p className="muted-note">尚无故障或恢复记录。</p>
+              )}
+              {runtime.data?.source_events.slice(0, 6).map((event) => (
+                <div key={event.id}>
+                  <span>{event.source_name}</span>
+                  <span>
+                    {event.kind === "recovered" ? "已恢复" : "采集失败"} ·{" "}
+                    {time(event.occurred_at)}
+                  </span>
+                  {event.error && <small>{event.error}</small>}
                 </div>
               ))}
             </div>
@@ -1451,9 +1618,13 @@ function App() {
                       ? "完成"
                       : j.status === "partial"
                         ? "部分完成"
-                        : j.status === "running"
-                          ? "进行中"
-                          : "失败"}
+                        : j.status === "cancelled"
+                          ? "已取消"
+                          : j.status === "interrupted"
+                            ? "中断后已接管"
+                            : j.status === "running"
+                              ? "进行中"
+                              : "失败"}
                   </span>
                   {j.report.errors?.map((e, i) => (
                     <small key={i}>

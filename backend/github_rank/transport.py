@@ -13,9 +13,14 @@ class RateLimited(FetchError):
     pass
 
 
+class CollectionCancelled(RuntimeError):
+    pass
+
+
 class Fetcher:
-    def __init__(self, db, token="", transport=None, sleeper=time.sleep):
+    def __init__(self, db, token="", transport=None, sleeper=time.sleep, cancelled=None):
         self.db, self.token, self.sleep = db, token, sleeper
+        self.cancelled = cancelled
         self.github_requests = 0
         self.github_blocked = set()
         self.client = httpx.Client(timeout=20, follow_redirects=True, transport=transport,
@@ -39,6 +44,8 @@ class Fetcher:
             if self.token:
                 headers["Authorization"] = "Bearer " + self.token
         for attempt in range(3):
+            if self.cancelled and self.cancelled():
+                raise CollectionCancelled("Collection stop requested")
             try:
                 if urlsplit(url).hostname == "api.github.com":
                     bucket = "search" if urlsplit(url).path.startswith("/search/") else "core"

@@ -1,7 +1,7 @@
 import argparse
 import json
-import time
 import sys
+import signal
 from .db import Database
 from .jobs import collect, register_sources, add_repository
 from .ranking import publish_rankings
@@ -10,6 +10,7 @@ from .sources import source_states, set_enabled
 from .summaries import summarize
 from .classify import CATEGORIES, AGENT_TYPES
 from .repositories import repository_items, edit_repository, edit_history
+from .scheduler import Scheduler, scheduler_status, request_stop
 
 
 def main():
@@ -28,6 +29,11 @@ def main():
     backup.add_argument("path")
     schedule = commands.add_parser("schedule")
     schedule.add_argument("--interval", type=int, default=60, help="Due-task check interval in seconds")
+    schedule_action = schedule.add_mutually_exclusive_group()
+    schedule_action.add_argument("--status", action="store_true", help="Show persisted scheduler status")
+    schedule_action.add_argument("--stop", action="store_true", help="Request a cooperative stop")
+    schedule.add_argument("--once", action="store_true", help="Run one due-task check then exit")
+    schedule.add_argument("--instance-id", help=argparse.SUPPRESS)
     summaries = commands.add_parser("summarize")
     summaries.add_argument("--kind", choices=["all", "project", "news", "resource"], default="all")
     summaries.add_argument("--limit", type=int, default=10)
@@ -100,22 +106,19 @@ def main():
             parser.error(str(exc))
         print(json.dumps(output, ensure_ascii=False, indent=2))
     else:
-        while True:
-            # News sources have their own persisted due times; repository/release jobs run once daily after 08:00 CST.
-            from datetime import datetime, timezone, timedelta
-            local = datetime.now(timezone(timedelta(hours=8)))
-            date = local.date().isoformat()
-            runs = db.rows("SELECT started_at FROM job_runs WHERE kind='all' AND status IN ('ok','partial') ORDER BY started_at DESC LIMIT 1")
-            last_day = datetime.fromisoformat(runs[0]["started_at"]).astimezone(timezone(timedelta(hours=8))).date().isoformat() if runs else None
-            mode = "all" if local.hour >= 8 and last_day != date else "news"
+        if args.status:
+            print(json.dumps(scheduler_status(db), ensure_ascii=False, indent=2))
+        elif args.stop:
+            print(json.dumps({"stop_requested": request_stop(db)}, ensure_ascii=False))
+        else:
+            runner = Scheduler(settings, db, interval=args.interval, instance_id=args.instance_id)
+            previous = signal.signal(signal.SIGTERM, lambda *_: runner.stop_event.set())
             try:
-                report = collect(settings, db, mode)
-                if settings.summary_auto and settings.summary_model:
-                    report["summaries"] = summarize(settings, db, limit=5)
-                print(json.dumps({"id": report["id"], "status": report["status"], "errors": report["errors"]}), flush=True)
-            except Exception as exc:
-                print(json.dumps({"status": "failed", "error": str(exc)[:300]}), flush=True)
-            time.sleep(max(args.interval, 30))
+                runner.run(max_cycles=1 if args.once else None)
+            except RuntimeError as exc:
+                parser.error(str(exc))
+            finally:
+                signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":

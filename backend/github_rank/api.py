@@ -12,10 +12,11 @@ from .db import Database, utcnow
 from .jobs import register_sources
 from .ranking import compute_rankings
 from .settings import Settings, ROOT
-from .sources import source_states
+from .sources import source_states, source_events
 from .summaries import annotate_summaries
 from .identity import workspace_id
 from .repositories import repository_items, resolve_repository, overrides_by_repo, apply_override, canonical_resource
+from .scheduler import scheduler_status
 
 
 def create_app(settings=None):
@@ -44,6 +45,18 @@ def create_app(settings=None):
     def config():
         languages = sorted({json.loads(row["data"]).get("language") for row in db.rows("SELECT data FROM repositories")} - {None, ""})
         return {"categories": CATEGORIES, "agent_types": AGENT_TYPES, "topics": TOPICS, "languages": languages}
+
+    @app.get("/api/runtime-status")
+    def runtime_status():
+        events = []
+        for row in source_events(db):
+            source = json.loads(row.pop("source_data"))
+            events.append({**row, "source_name": source["name"]})
+        now = datetime.now(timezone.utc)
+        oldest = db.rows("SELECT min(updated_at) AS t FROM repositories")[0]["t"]
+        return {"as_of": now.isoformat(timespec="seconds"), "scheduler": scheduler_status(db, now),
+                "source_events": events, "oldest_repository_update": oldest,
+                "repositories_stale": bool(oldest and now-datetime.fromisoformat(oldest) > timedelta(hours=36))}
 
     @app.get("/api/data-status")
     def data_status():

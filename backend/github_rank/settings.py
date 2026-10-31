@@ -18,15 +18,16 @@ class Settings:
     summary_auto: bool = False
 
     @classmethod
-    def from_env(cls):
+    def from_env(cls, environ=None):
+        env = os.environ if environ is None else environ
         return cls(
-            Path(os.environ.get("GITHUB_RANK_DB", str(ROOT / "data/github_rank.sqlite3"))),
-            Path(os.environ.get("GITHUB_RANK_CONFIG", str(ROOT / "config/sources.yaml"))),
-            os.environ.get("GITHUB_TOKEN", ""),
-            os.environ.get("GITHUB_RANK_SUMMARY_MODEL", ""),
-            os.environ.get("GITHUB_RANK_SUMMARY_URL", "http://127.0.0.1:11434"),
-            max(int(os.environ.get("GITHUB_RANK_SUMMARY_DAILY_LIMIT", "20")), 0),
-            os.environ.get("GITHUB_RANK_AUTO_SUMMARY", "").lower() in ("1", "true"),
+            Path(env.get("GITHUB_RANK_DB", str(ROOT / "data/github_rank.sqlite3"))),
+            Path(env.get("GITHUB_RANK_CONFIG", str(ROOT / "config/sources.yaml"))),
+            env.get("GITHUB_TOKEN", ""),
+            env.get("GITHUB_RANK_SUMMARY_MODEL", ""),
+            env.get("GITHUB_RANK_SUMMARY_URL", "http://127.0.0.1:11434"),
+            max(int(env.get("GITHUB_RANK_SUMMARY_DAILY_LIMIT", "20")), 0),
+            env.get("GITHUB_RANK_AUTO_SUMMARY", "").lower() in ("1", "true"),
         )
 
     def config(self):

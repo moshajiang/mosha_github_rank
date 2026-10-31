@@ -109,6 +109,28 @@ PRAGMA user_version=3;
 COMMIT;
 """
 
+MIGRATION_4 = """
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS scheduler_state (
+ id INTEGER PRIMARY KEY CHECK(id=1), instance_id TEXT NOT NULL,
+ started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, stopped_at TEXT,
+ status TEXT NOT NULL, interval_seconds INTEGER NOT NULL,
+ current_mode TEXT, next_check_at TEXT, last_cycle_at TEXT,
+ last_result TEXT, error TEXT, stop_requested INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS source_health (
+ source_id TEXT PRIMARY KEY REFERENCES sources(id), consecutive_failures INTEGER NOT NULL DEFAULT 0,
+ last_error_at TEXT, last_recovered_at TEXT
+);
+CREATE TABLE IF NOT EXISTS source_events (
+ id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES sources(id),
+ kind TEXT NOT NULL, occurred_at TEXT NOT NULL, error TEXT
+);
+CREATE INDEX IF NOT EXISTS source_events_time ON source_events(occurred_at);
+PRAGMA user_version=4;
+COMMIT;
+"""
+
 
 class Database:
     def __init__(self, path):
@@ -117,7 +139,7 @@ class Database:
         with self.connect() as con:
             con.execute("PRAGMA journal_mode=WAL")
             version = con.execute("PRAGMA user_version").fetchone()[0]
-            if version > 3:
+            if version > 4:
                 raise RuntimeError("Database schema is newer than this application")
             if version == 0:
                 con.executescript(SCHEMA)
@@ -127,6 +149,9 @@ class Database:
                 version = 2
             if version == 2:
                 con.executescript(MIGRATION_3)
+                version = 3
+            if version == 3:
+                con.executescript(MIGRATION_4)
 
     @contextmanager
     def connect(self):
@@ -148,8 +173,8 @@ class Database:
             con.execute(sql, params)
 
     @contextmanager
-    def lease(self, name):
-        owner = uuid.uuid4().hex
+    def lease(self, name, owner=None):
+        owner = owner or uuid.uuid4().hex
         now = utcnow()
         expiry = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(timespec="seconds")
         with self.connect() as con:
