@@ -31,6 +31,25 @@ import {
   AlertCircle,
 } from "lucide-react";
 import "./styles.css";
+import {
+  LIBRARY_KEY,
+  LEGACY_KEY,
+  MAX_BACKUP_BYTES,
+  emptyLibrary,
+  loadLibrary,
+  writeLibrary,
+  makeEntry,
+  mergeLibrary,
+  parseLibrary,
+  serializeLibrary,
+  libraryMarkdown,
+  referenceBatches,
+  markRead,
+  readStatus,
+  type SavedEntry,
+  type LibraryState,
+  type ReadMark,
+} from "./library";
 
 type SummaryFields = {
   summary_zh?: string;
@@ -258,11 +277,33 @@ type NewsResult = {
   total: number;
   unknown_time_total: number;
 };
-type Saved = {
-  type: "project" | "resource" | "news";
+type Saved = SavedEntry;
+type LocalLibrary = ReturnType<typeof loadLibrary>;
+type ResolvedEntry = {
+  type: Saved["type"];
   id: string;
-  data: Repo | Resource | News;
+  state: "current" | "excluded" | "missing";
+  data: Repo | Resource | News | null;
 };
+function readLocalLibrary(): LocalLibrary {
+  try {
+    return loadLibrary(localStorage);
+  } catch {
+    return { state: emptyLibrary(), error: "浏览器存储不可用" };
+  }
+}
+function downloadText(
+  name: string,
+  content: string,
+  mime = "application/json",
+) {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 const time = (value?: string | null) =>
   value
@@ -276,7 +317,7 @@ const time = (value?: string | null) =>
     : "尚未同步";
 const number = (n: number) =>
   n >= 1000
-    ? (n / 1000).toFixed(n >= 10000 ? 1 : 2).replace(/0$/, "") + "k"
+    ? (n / 1000).toFixed(n >= 10000 ? 1 : 2).replace(/\.?0+$/, "") + "k"
     : String(n);
 const colors: Record<string, string> = {
   Python: "#4b83b6",
@@ -337,16 +378,15 @@ function App() {
   }, [sourcesOpen]);
   const [sidebar, setSidebar] = useState(false);
   const [advanced, setAdvanced] = useState(false);
-  const [saved, setSaved] = useState<Saved[]>(() => {
-    try {
-      const data = JSON.parse(
-        localStorage.getItem("github-rank:saved") || "[]",
-      );
-      return Array.isArray(data) ? data : [];
-    } catch {
-      return [];
-    }
-  });
+  const [localLibrary, setLocalLibrary] =
+    useState<LocalLibrary>(readLocalLibrary);
+  const saved = localLibrary.state.entries,
+    reading = localLibrary.state.reading;
+  const [resolvedLibrary, setResolvedLibrary] = useState<{
+    items: ResolvedEntry[];
+    loading: boolean;
+    error?: string;
+  }>({ items: [], loading: false });
   const [notice, setNotice] = useState("");
   const path = route.split("?")[0],
     params = new URLSearchParams(route.split("?")[1] || "");
@@ -368,6 +408,53 @@ function App() {
     sort = params.get("sort") || "latest",
     source = params.get("source") || "";
   const resourcesView = isAgents && params.get("view") === "resources";
+  const readingFilter = ["unread", "read", "updated"].includes(
+    params.get("read") || "",
+  )
+    ? params.get("read")!
+    : "all";
+  const savedType = ["project", "resource", "news"].includes(
+    params.get("type") || "",
+  )
+    ? params.get("type")!
+    : "all";
+  const refsKey = saved.map((s) => s.type + ":" + s.id).join(",");
+  useEffect(() => {
+    const handler = (event: StorageEvent) => {
+      if (
+        event.key === LIBRARY_KEY ||
+        event.key === LEGACY_KEY ||
+        event.key === null
+      )
+        setLocalLibrary(readLocalLibrary());
+    };
+    addEventListener("storage", handler);
+    return () => removeEventListener("storage", handler);
+  }, []);
+  useEffect(() => {
+    if (!isSaved) return;
+    const controller = new AbortController();
+    setResolvedLibrary({ items: [], loading: !!refsKey });
+    Promise.allSettled(
+      referenceBatches(saved).map(async (url) => {
+        const response = await fetch(url, { signal: controller.signal });
+        if (!response.ok) throw new Error("收藏同步失败");
+        return (await response.json()).items as ResolvedEntry[];
+      }),
+    ).then((results) => {
+      if (controller.signal.aborted) return;
+      setResolvedLibrary({
+        items: results.flatMap((r) =>
+          r.status === "fulfilled" ? r.value : [],
+        ),
+        loading: false,
+        error: results.some((r) => r.status === "rejected")
+          ? "部分内容暂时无法更新，以下保留保存时的参考快照。"
+          : undefined,
+      });
+    });
+    return () => controller.abort();
+  }, [isSaved, refsKey, revision]);
   const resourcePage = Math.min(
     1001,
     Math.max(1, Math.floor(Number(params.get("page") || "1")) || 1),
@@ -433,6 +520,15 @@ function App() {
     }[];
   }>("/api/archives", revision);
   const cfg = config.data;
+  const matchesReading = (item: News) => {
+    const state = readStatus(reading[item.id], item.content_hash);
+    return (
+      readingFilter === "all" ||
+      (readingFilter === "unread" ? state !== "read" : state === readingFilter)
+    );
+  };
+  const visibleNews = news.data?.items.filter(matchesReading) || [];
+  const visibleUnknown = news.data?.unknown_time.filter(matchesReading) || [];
 
   function navigate(url: string) {
     history.pushState({}, "", url);
@@ -469,19 +565,89 @@ function App() {
     const timer = setTimeout(() => setNotice(""), 3000);
     return () => clearTimeout(timer);
   }, [notice]);
-  function toggle(type: Saved["type"], id: string, data: Saved["data"]) {
-    const exists = saved.some((s) => s.type === type && s.id === id);
-    const next = exists
-      ? saved.filter((s) => !(s.type === type && s.id === id))
-      : [...saved, { type, id, data }];
+  function commitLibrary(
+    state: LibraryState,
+    message: string,
+    recover = false,
+  ) {
+    if (localLibrary.error && !recover) {
+      setNotice("原记录无法读取，请在收藏页导出原始记录或导入有效备份。");
+      return;
+    }
     try {
-      localStorage.setItem("github-rank:saved", JSON.stringify(next));
-      setSaved(next);
-      setNotice(exists ? "已取消收藏" : "已保存到本机收藏");
-    } catch {
-      setNotice("浏览器存储不可用，收藏未保存");
+      writeLibrary(localStorage, state);
+      setLocalLibrary({ state });
+      setNotice(message);
+    } catch (error) {
+      setNotice(
+        error instanceof Error
+          ? error.message + "，原记录已保留"
+          : "存储失败，原记录已保留",
+      );
     }
   }
+  function toggle(type: Saved["type"], id: string, data: Saved["data"]) {
+    const exists = saved.some((s) => s.type === type && s.id === id);
+    try {
+      const next = exists
+        ? saved.filter((s) => !(s.type === type && s.id === id))
+        : [...saved, makeEntry(type, id, data)];
+      if (next.length > 500) throw new Error("最多保留 500 条收藏");
+      commitLibrary(
+        { ...localLibrary.state, entries: next },
+        exists ? "已取消收藏" : "已保存到本机收藏",
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "收藏未保存");
+    }
+  }
+  function markArticle(item: News) {
+    commitLibrary(
+      markRead(
+        localLibrary.state,
+        item.id,
+        item.version_view?.content_hash || item.content_hash,
+      ),
+      "已标记当前查看版本为已读",
+    );
+  }
+  function markUnread(id: string) {
+    const next = { ...reading };
+    delete next[id];
+    commitLibrary({ ...localLibrary.state, reading: next }, "已标为未读");
+  }
+  async function importBackup(file: File) {
+    try {
+      if (file.size > MAX_BACKUP_BYTES) throw new Error("备份超过 4 MB");
+      const next = mergeLibrary(
+        localLibrary.state,
+        parseLibrary(await file.text()),
+      );
+      commitLibrary(next, "备份已合并到本机收藏", true);
+    } catch (error) {
+      setNotice(
+        error instanceof Error ? error.message : "导入失败，原记录已保留",
+      );
+    }
+  }
+  const readingTabs = (
+    <div className="reading-tabs" aria-label="阅读状态筛选">
+      {[
+        ["all", "全部"],
+        ["unread", "未读 / 有更新"],
+        ["read", "已读"],
+        ["updated", "有更新"],
+      ].map(([value, label]) => (
+        <button
+          key={value}
+          className={readingFilter === value ? "active" : ""}
+          onClick={() => filter("read", value === "all" ? "" : value)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
   const hasSaved = (type: string, id: string) =>
     saved.some((s) => s.type === type && s.id === id);
   const saveButton = (type: Saved["type"], id: string, data: Saved["data"]) => (
@@ -576,6 +742,14 @@ function App() {
           原文 <ArrowUpRight size={12} />
         </a>
         {!compact && saveButton("news", item.id, item)}
+        {!compact && (
+          <ReadButton
+            mark={reading[item.id]}
+            digest={item.content_hash}
+            onRead={() => markArticle(item)}
+            onUnread={() => markUnread(item.id)}
+          />
+        )}
       </div>
       <button
         className="news-title"
@@ -676,6 +850,88 @@ function App() {
   );
   const formal = rankings.data?.items || [],
     observing = rankings.data?.observing || [];
+  const resolvedById = new Map(
+    resolvedLibrary.items.map((item) => [item.type + ":" + item.id, item]),
+  );
+  const visibleSaved = saved.filter((entry) => {
+    if (savedType !== "all" && entry.type !== savedType) return false;
+    const current = resolvedById.get(entry.type + ":" + entry.id)?.data;
+    const data = current || entry.data;
+    const text = [
+      "full_name" in data ? data.full_name : "",
+      "name" in data ? data.name : "",
+      "title" in data ? data.title : "",
+      "description" in data ? data.description : "",
+      "summary" in data ? data.summary : "",
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (query && !text.includes(query.toLowerCase())) return false;
+    return (
+      entry.type !== "news" ||
+      savedType !== "news" ||
+      matchesReading(data as News)
+    );
+  });
+  function savedCard(entry: Saved) {
+    const resolved = resolvedById.get(entry.type + ":" + entry.id);
+    const current = resolved?.data;
+    return (
+      <section
+        className={"saved-entry " + (entry.type === "news" ? "saved-news" : "")}
+        key={entry.type + ":" + entry.id}
+      >
+        <div className="saved-entry-meta">
+          <span>
+            {entry.saved_at
+              ? "收藏于 " + time(entry.saved_at)
+              : "旧收藏 · 保存时间未记录"}
+          </span>
+          <span
+            className={resolved?.state === "excluded" ? "library-warning" : ""}
+          >
+            {resolved?.state === "excluded"
+              ? "已从公开发现页排除"
+              : current
+                ? "当前库内记录"
+                : resolved?.state === "missing"
+                  ? "库中未找到"
+                  : resolvedLibrary.loading
+                    ? "正在更新"
+                    : "暂时无法更新"}
+          </span>
+        </div>
+        {current ? (
+          entry.type === "project" ? (
+            repoCard(current as Repo)
+          ) : entry.type === "resource" ? (
+            resourceCard(current as Resource)
+          ) : (
+            newsCard(current as News)
+          )
+        ) : (
+          <article className="library-snapshot">
+            <div className="card-top">
+              <span className="eyebrow">保存时的参考快照</span>
+              {saveButton(entry.type, entry.id, entry.data)}
+            </div>
+            <h3>
+              {entry.data.full_name || entry.data.name || entry.data.title}
+            </h3>
+            <p>
+              {entry.data.description || entry.data.summary || "未保存介绍"}
+            </p>
+            <a href={safeUrl(entry.data.url)} target="_blank" rel="noreferrer">
+              保存时的来源链接 <ArrowUpRight size={13} />
+            </a>
+            <small>
+              链接可能已改名或失效；未将旧指标和摘要作为当前数据展示。
+            </small>
+          </article>
+        )}
+      </section>
+    );
+  }
   const displayedRepos = isHome
     ? (formal.length ? formal : observing).slice(0, 6)
     : formal;
@@ -1427,6 +1683,7 @@ function App() {
           )}
           {isNews && (
             <>
+              {readingTabs}
               <div className="list-header">
                 <span>{news.data?.total || 0} 条资讯 · 按原始发布时间筛选</span>
                 <button
@@ -1438,13 +1695,20 @@ function App() {
                 </button>
               </div>
               <Loading state={news} />
+              {readingFilter !== "all" && (
+                <p className="muted-note">
+                  当前已加载内容中匹配 {visibleNews.length} 条近期资讯、
+                  {visibleUnknown.length}{" "}
+                  条时间待确认资讯。阅读状态仅存于本机，“未读”包含有更新的记录。
+                </p>
+              )}
               <div className="news-list">
-                {news.data?.items.map((n) => newsCard(n))}
+                {visibleNews.map((n) => newsCard(n))}
               </div>
-              {!news.loading && !news.data?.items.length && (
+              {!news.loading && !visibleNews.length && (
                 <Empty
-                  title="这个时间段还没有匹配的资讯"
-                  description="试试更长的时间范围，或查看下方发布时间未知的内容。"
+                  title="当前筛选下没有匹配的资讯"
+                  description="试试其他阅读状态、更长的时间范围，或查看下方发布时间待确认的内容。"
                 />
               )}
               {!!news.data?.unknown_time.length && (
@@ -1461,7 +1725,7 @@ function App() {
                     </div>
                   </div>
                   <div className="news-list">
-                    {news.data.unknown_time.map((n) => newsCard(n))}
+                    {visibleUnknown.map((n) => newsCard(n))}
                   </div>
                 </>
               )}
@@ -1469,30 +1733,146 @@ function App() {
           )}
           {isSaved && (
             <>
+              <section className="library-toolbar">
+                <div>
+                  <h2>留住发现，接着阅读</h2>
+                  <p>
+                    收藏按 ID
+                    更新库内内容；保存时的快照可作参考。仅保存在当前浏览器与站点地址下。
+                  </p>
+                </div>
+                <div className="library-actions">
+                  <button
+                    className="outline-button"
+                    disabled={!!localLibrary.error}
+                    onClick={() =>
+                      downloadText(
+                        "github-rank-library.json",
+                        serializeLibrary(localLibrary.state),
+                      )
+                    }
+                  >
+                    <ArrowDownToLine size={14} />
+                    备份 JSON
+                  </button>
+                  <button
+                    className="outline-button"
+                    disabled={!!localLibrary.error}
+                    onClick={() =>
+                      downloadText(
+                        "github-rank-saved.md",
+                        libraryMarkdown(localLibrary.state),
+                        "text/markdown;charset=utf-8",
+                      )
+                    }
+                  >
+                    导出 Markdown
+                  </button>
+                  <label className="outline-button import-backup">
+                    导入备份
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      aria-label="导入收藏备份"
+                      onChange={(e) => {
+                        const file = e.currentTarget.files?.[0];
+                        if (file) void importBackup(file);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+                <small>
+                  备份含收藏与阅读记录；导入会合并并保留本机已有收藏。最多 500
+                  条收藏、最近 5000 条阅读记录。
+                </small>
+              </section>
+              {localLibrary.error && (
+                <div className="curation-notice" role="alert">
+                  <AlertCircle size={17} />
+                  <div>
+                    本机记录读取失败：{localLibrary.error}
+                    。原始内容仍保留，可导出排查后导入有效备份恢复。
+                  </div>
+                  {localLibrary.raw && (
+                    <button
+                      className="text-button"
+                      onClick={() =>
+                        downloadText(
+                          "github-rank-library-unreadable.txt",
+                          localLibrary.raw!,
+                          "text/plain",
+                        )
+                      }
+                    >
+                      导出原始记录
+                    </button>
+                  )}
+                </div>
+              )}
+              <div className="library-filters">
+                <div className="reading-tabs" aria-label="收藏类型筛选">
+                  {[
+                    ["all", "全部"],
+                    ["project", "项目"],
+                    ["resource", "Agent 资源"],
+                    ["news", "资讯"],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      className={savedType === value ? "active" : ""}
+                      onClick={() =>
+                        filter("type", value === "all" ? "" : value)
+                      }
+                    >
+                      {label}{" "}
+                      <small>
+                        {value === "all"
+                          ? saved.length
+                          : saved.filter((s) => s.type === value).length}
+                      </small>
+                    </button>
+                  ))}
+                </div>
+                <label className="library-search">
+                  <Search size={15} />
+                  <input
+                    aria-label="搜索收藏"
+                    value={query}
+                    placeholder="搜索收藏"
+                    onChange={(e) => filter("q", e.target.value)}
+                  />
+                </label>
+              </div>
+              {savedType === "news" && readingTabs}
+              {resolvedLibrary.loading && (
+                <p className="muted-note" role="status">
+                  正在读取收藏的最新记录…
+                </p>
+              )}
+              {resolvedLibrary.error && (
+                <p className="library-warning" role="alert">
+                  {resolvedLibrary.error}
+                </p>
+              )}
               {!saved.length && (
                 <Empty
                   title="下一次发现，从这里继续"
                   description="点击项目、Skill 或资讯卡片上的收藏按钮，即可保存在当前浏览器。"
                 />
               )}
-              <div className="repo-grid wide">
-                {saved
-                  .filter((s) => s.type === "project")
-                  .map((s) => repoCard(s.data as Repo))}
-                {saved
-                  .filter((s) => s.type === "resource")
-                  .map((s) => resourceCard(s.data as Resource))}
-              </div>
-              <div className="news-list">
-                {saved
-                  .filter((s) => s.type === "news")
-                  .map((s) => newsCard(s.data as News))}
-              </div>
-              {!!saved.length && (
-                <p className="muted-note">
-                  收藏保留保存时的内容快照，项目最新数据请打开详情查看。
-                </p>
+              {!!saved.length && !visibleSaved.length && (
+                <Empty
+                  title="没有匹配的收藏"
+                  description="试试其他类型、关键词或阅读状态。"
+                />
               )}
+              <div className="repo-grid wide">
+                {visibleSaved.filter((s) => s.type !== "news").map(savedCard)}
+              </div>
+              <div className="news-list saved-news-list">
+                {visibleSaved.filter((s) => s.type === "news").map(savedCard)}
+              </div>
             </>
           )}
           {isArchive && (
@@ -1544,6 +1924,9 @@ function App() {
               cfg={cfg}
               navigate={navigate}
               saveButton={saveButton}
+              reading={reading}
+              onMarkRead={markArticle}
+              onMarkUnread={markUnread}
             />
           )}
           {isResourceDetail && (
@@ -1887,6 +2270,42 @@ function newsDate(value?: string | null, precision?: string) {
   });
 }
 
+function ReadButton({
+  mark,
+  digest,
+  onRead,
+  onUnread,
+}: {
+  mark?: ReadMark;
+  digest?: string;
+  onRead: () => void;
+  onUnread: () => void;
+}) {
+  const state = readStatus(mark, digest);
+  return (
+    <button
+      className={"reading-button " + state}
+      onClick={state === "read" ? onUnread : onRead}
+      title={
+        mark ? "标记时间：" + time(mark.read_at) : "打开详情不会自动标记已读"
+      }
+    >
+      {state === "read" ? (
+        <Check size={13} />
+      ) : state === "updated" ? (
+        <RefreshCw size={13} />
+      ) : (
+        <Clock3 size={13} />
+      )}
+      {state === "read"
+        ? "已读 · 标为未读"
+        : state === "updated"
+          ? "有更新 · 标为已读"
+          : "标为已读"}
+    </button>
+  );
+}
+
 function NewsDetail({
   path,
   versionHash,
@@ -1894,12 +2313,18 @@ function NewsDetail({
   cfg,
   navigate,
   saveButton,
+  reading,
+  onMarkRead,
+  onMarkUnread,
 }: {
   path: string;
   versionHash: string;
   revision: number;
   cfg?: Config;
   navigate: (url: string) => void;
+  reading: Record<string, ReadMark>;
+  onMarkRead: (item: News) => void;
+  onMarkUnread: (id: string) => void;
   saveButton: (
     t: Saved["type"],
     id: string,
@@ -1950,6 +2375,12 @@ function NewsDetail({
         </div>
         <div className="detail-actions">
           {saveButton("news", item.id, item)}
+          <ReadButton
+            mark={reading[item.id]}
+            digest={item.version_view?.content_hash || item.content_hash}
+            onRead={() => onMarkRead(item)}
+            onUnread={() => onMarkUnread(item.id)}
+          />
           <a
             className="primary-button"
             href={safeUrl(item.url)}

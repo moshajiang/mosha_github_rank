@@ -19,6 +19,7 @@ from .repositories import repository_items, resolve_repository, overrides_by_rep
 from .scheduler import scheduler_status
 from .agent_resources import enrich_resource, resource_items, resource_catalog, duplicate_key, with_duplicates
 from .news_events import news_catalog, news_detail as get_news_detail
+from .library import resolve_library
 
 
 def create_app(settings=None):
@@ -47,6 +48,13 @@ def create_app(settings=None):
     def config():
         languages = sorted({json.loads(row["data"]).get("language") for row in db.rows("SELECT data FROM repositories")} - {None, ""})
         return {"categories": CATEGORIES, "agent_types": AGENT_TYPES, "topics": TOPICS, "languages": languages}
+
+    @app.get("/api/library")
+    def library(projects: str = Query("",max_length=4000), resources: str = Query("",max_length=7000), news: str = Query("",max_length=7000)):
+        try:
+            return resolve_library(db,projects,resources,news)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from exc
 
     @app.get("/api/runtime-status")
     def runtime_status():

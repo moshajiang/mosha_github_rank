@@ -90,6 +90,8 @@ docker compose up --build -d
 
 ## 测试和备份
 
+前端状态测试使用 Node.js 24.12+ 的原生 TypeScript 支持，运行命令为 npm --prefix frontend test；CI 使用 Node 24。
+
 ```powershell
 uv pip install --python .venv\Scripts\python.exe -e '.[dev]' --constraint requirements.lock
 .\.venv\Scripts\python.exe -m pytest -q
@@ -123,3 +125,14 @@ Windows 受限沙箱中，pytest 临时目录需指定到工作区，例如 `--b
 ```
 
 人工修订在采集刷新后继续生效；排除保留历史和已发布榜单，改名后旧链接仍可解析到同一个仓库 ID。完整命令、恢复方式和限制见 [项目维护说明](docs/CURATION.md)。
+
+## 收藏、阅读与评估
+
+“我的收藏”按稳定 ID 获取最新库内内容，支持类型/关键词筛选、JSON 备份合并导入和 Markdown 导出。资讯可手动标记已读，内容版本变化后提示“有更新”。数据留在当前浏览器与站点地址下，旧收藏可自动迁移，详见 [本机收藏与阅读](docs/LIBRARY.md)。
+
+~~~powershell
+.\.venv\Scripts\python.exe -m github_rank.cli summary-eval prepare --output data/evaluations/sample.json
+.\.venv\Scripts\python.exe -m github_rank.cli summary-eval report data/evaluations/sample.json --output data/evaluations/report.json
+~~~
+
+评估命令准备固定输入及人工审阅字段，不调用模型。未生成摘要时保持待生成、通过率为空；流程和本轮 70 条真实样本见 [摘要评估说明](docs/SUMMARY_EVALUATION.md)。

@@ -12,6 +12,7 @@ from .classify import CATEGORIES, AGENT_TYPES
 from .repositories import repository_items, edit_repository, edit_history
 from .scheduler import Scheduler, scheduler_status, request_stop
 from .news_events import news_items, edit_events, edit_history as news_edit_history
+from .summary_eval import prepare_evaluation, evaluation_report, write_json
 
 
 def main():
@@ -38,6 +39,17 @@ def main():
     summaries = commands.add_parser("summarize")
     summaries.add_argument("--kind", choices=["all", "project", "news", "resource"], default="all")
     summaries.add_argument("--limit", type=int, default=10)
+    evaluation = commands.add_parser("summary-eval",help="Prepare or report a manual summary evaluation without model calls")
+    eval_actions = evaluation.add_subparsers(dest="eval_action",required=True)
+    prepare = eval_actions.add_parser("prepare")
+    prepare.add_argument("--projects",type=int,default=30)
+    prepare.add_argument("--news",type=int,default=30)
+    prepare.add_argument("--resources",type=int,default=10)
+    prepare.add_argument("--model")
+    prepare.add_argument("--output",required=True)
+    report = eval_actions.add_parser("report")
+    report.add_argument("input")
+    report.add_argument("--output",required=True)
     sources = commands.add_parser("sources")
     sources.add_argument("action", choices=["list", "enable", "disable"], default="list", nargs="?")
     sources.add_argument("source_id", nargs="?")
@@ -74,7 +86,8 @@ def main():
     args = parser.parse_args()
     settings = Settings.from_env()
     db = Database(settings.db_path)
-    register_sources(db, settings.config())
+    if args.command != "summary-eval":
+        register_sources(db, settings.config())
     if args.command == "init":
         print("Database and source configuration initialized")
     elif args.command == "publish":
@@ -90,6 +103,25 @@ def main():
         if not 1 <= args.limit <= 100:
             parser.error("--limit must be between 1 and 100")
         print(json.dumps(summarize(settings, db, args.kind, args.limit), ensure_ascii=False, indent=2))
+    elif args.command == "summary-eval":
+        try:
+            if args.eval_action=="prepare":
+                packet=prepare_evaluation(db,args.projects,args.news,args.resources,args.model)
+                write_json(args.output,packet)
+                output={"selected":packet["selected"],"output":args.output,"note":"No model calls were made"}
+            else:
+                from pathlib import Path
+                path=Path(args.input)
+                if path.stat().st_size>10_000_000:
+                    parser.error("Evaluation packet exceeds 10 MB")
+                packet=json.loads(path.read_text(encoding="utf-8-sig"))
+                output=evaluation_report(packet)
+                write_json(args.output,output)
+                output={k:v for k,v in output.items() if k!="samples"}
+                output["output"]=args.output
+            print(json.dumps(output,ensure_ascii=False,indent=2))
+        except (ValueError,OSError) as exc:
+            parser.error(str(exc))
     elif args.command == "sources":
         if args.action != "list":
             if not args.source_id:
