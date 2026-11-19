@@ -3,12 +3,11 @@ from datetime import datetime, timezone, timedelta
 import json
 import threading
 import uuid
-from .db import dumps, utcnow
-from .jobs import collect
+from .db import LeaseBusyError, dumps, utcnow
+from .jobs import collect, repository_due
 from .summaries import summarize
 
 
-CST = timezone(timedelta(hours=8))
 HEARTBEAT_SECONDS = 5
 STALE_SECONDS = 90
 ACTIVE = ("running", "stopping")
@@ -16,15 +15,6 @@ ACTIVE = ("running", "stopping")
 
 def parse_time(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def repository_due(db, now):
-    local = now.astimezone(CST)
-    due = local.replace(hour=8, minute=0, second=0, microsecond=0)
-    runs = db.rows("SELECT started_at FROM job_runs WHERE kind='all' AND status IN ('ok','partial') ORDER BY started_at DESC LIMIT 1")
-    if runs and parse_time(runs[0]["started_at"]).astimezone(CST).date() == local.date():
-        due += timedelta(days=1)
-    return due.astimezone(timezone.utc)
 
 
 def scheduler_status(db, now=None):
@@ -111,8 +101,11 @@ class Scheduler:
         try:
             report = self.collector(self.settings, self.db, mode, cancelled=self.should_stop, scheduler_instance=self.instance_id)
             result, error = report["status"], None
-            if not self.should_stop() and self.settings.summary_auto and self.settings.summary_model:
-                self.summarizer(self.settings, self.db, limit=5)
+            if not self.should_stop() and self.settings.summary_auto and not self.settings.summary_configuration_error:
+                try:
+                    self.summarizer(self.settings, self.db, limit=5)
+                except LeaseBusyError:
+                    pass
         except RuntimeError as exc:
             # A manual collector may hold the shared collection lease. Retry on the next check.
             busy = bool(self.db.rows("SELECT owner FROM leases WHERE name='collection'"))

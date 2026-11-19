@@ -11,6 +11,15 @@ from .sources import source_enabled, record_source_result
 from .repositories import normalize_name
 
 
+def repository_due(db, now):
+    local = now.astimezone(timezone(timedelta(hours=8)))
+    due = local.replace(hour=8, minute=0, second=0, microsecond=0)
+    runs = db.rows("SELECT started_at FROM job_runs WHERE kind='all' AND status IN ('ok','partial') ORDER BY started_at DESC LIMIT 1")
+    if runs and datetime.fromisoformat(runs[0]["started_at"]).astimezone(local.tzinfo).date() == local.date():
+        due += timedelta(days=1)
+    return due.astimezone(timezone.utc)
+
+
 def register_sources(db, config):
     for source in config.get("news_sources", []):
         db.execute("INSERT INTO sources(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (source["id"], dumps(source)))
@@ -59,6 +68,11 @@ def collect(settings, db, mode="all", discovery=True, repo_limit=None, force=Fal
     try:
         # One writer job at a time, even when news and repository tasks overlap.
         with db.lease("collection", owner="scheduler:"+scheduler_instance if scheduler_instance else None):
+            if mode == "due":
+                now = datetime.now(timezone.utc)
+                has_repositories = db.rows("SELECT 1 FROM repositories LIMIT 1")
+                mode = "news" if has_repositories and repository_due(db, now) > now else "all"
+            report["mode"] = mode
             db.execute("INSERT INTO job_runs VALUES(?,?,?,?,?,?)", (run_id, mode, utcnow(), None, "running", dumps(report)))
             if mode in ("all", "repositories"):
                 names = list(config.get("repositories", []))

@@ -15,6 +15,7 @@ from .news_events import news_items, edit_events, edit_history as news_edit_hist
 from .summary_eval import prepare_evaluation, evaluation_report, write_json
 from .coverage import coverage_report, coverage_markdown
 from .resource_rescan import plan_rescan, rescan_repositories, MAX_RESCAN_REPOSITORIES
+from .updates import update
 
 
 def main():
@@ -43,8 +44,11 @@ def main():
     schedule.add_argument("--once", action="store_true", help="Run one due-task check then exit")
     schedule.add_argument("--instance-id", help=argparse.SUPPRESS)
     summaries = commands.add_parser("summarize")
-    summaries.add_argument("--kind", choices=["all", "project", "news", "resource"], default="all")
+    summaries.add_argument("--kind", choices=["all", "project", "news", "resource"],
+                           help="Default: project for InkStone, all for Ollama")
     summaries.add_argument("--limit", type=int, default=10)
+    updating = commands.add_parser("update", help="Collect due sources and generate missing Chinese project summaries")
+    updating.add_argument("--summary-limit", type=int, choices=range(1, 101), metavar="1-100", default=10)
     evaluation = commands.add_parser("summary-eval",help="Prepare or report a manual summary evaluation without model calls")
     eval_actions = evaluation.add_subparsers(dest="eval_action",required=True)
     prepare = eval_actions.add_parser("prepare")
@@ -98,7 +102,7 @@ def main():
     args = parser.parse_args()
     settings = Settings.from_env()
     db = Database(settings.db_path)
-    if args.command not in ("summary-eval","coverage") and not (args.command == "projects" and args.action == "rescan"):
+    if args.command not in ("summary-eval", "coverage", "update") and not (args.command == "projects" and args.action == "rescan"):
         register_sources(db, settings.config())
     if args.command == "init":
         print("Database and source configuration initialized")
@@ -132,6 +136,8 @@ def main():
         if not 1 <= args.limit <= 100:
             parser.error("--limit must be between 1 and 100")
         print(json.dumps(summarize(settings, db, args.kind, args.limit), ensure_ascii=False, indent=2))
+    elif args.command == "update":
+        print(json.dumps(update(settings, db, args.summary_limit), ensure_ascii=False, indent=2))
     elif args.command == "summary-eval":
         try:
             if args.eval_action=="prepare":

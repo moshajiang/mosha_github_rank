@@ -2,7 +2,7 @@
 
 中文优先的 GitHub 项目发现与趋势排行工具，关注近期热门、早期潜力、AI Agent 生态及 AI 前沿资讯。
 
-当前阶段：已完成本地版本、项目维护、调度和资源增强。最近一次资源验收包含 134 个真实仓库、116 条 Agent 资源记录和 115 条资讯。支持语言/Star 筛选、来源启停、可选 Ollama 中文摘要。完整增长榜等待历史积累；尚未配置真实摘要模型。
+当前阶段已实现本地浏览、项目维护、调度和资源增强。项目中文简介可用书生·端砚 API 或本机 Ollama 生成，支持查看原文引用。完整增长榜依赖持续积累的历史快照。
 
 最新进展（2026-10-31）：新增手动跟踪仓库、人工分类/Agent 标签修订、排除与恢复、修订审计及仓库改名别名。数据库升级到 v3，真实数据升级前已备份，旧详情链接和历史记录可继续访问。
 
@@ -33,6 +33,8 @@
 首次安装完成后，日常直接双击项目根目录的 [启动.cmd](启动.cmd)：后台启动服务，等待就绪后自动打开浏览器。重复启动复用当前服务，默认端口被占用时自动选择附近空闲端口。
 
 关闭服务时双击 [关闭.cmd](关闭.cmd)。关闭浏览器标签页后后台服务仍会运行；关闭入口核对进程身份，只处理快捷启动器创建的进程。
+
+手动更新时双击 [更新.cmd](更新.cmd)。它按到期规则采集数据并补齐项目中文简介，结束后在窗口显示本次结果。 [一键更新说明](docs/OPERATIONS.md#一键更新)
 
 需要自动更新数据时，再双击 [启动采集.cmd](启动采集.cmd)。双击 [停止采集.cmd](停止采集.cmd) 只停止采集，网页服务继续运行；关闭网页服务也不会停止独立采集。调度和来源状态可在网页的“数据源与同步状态”查看，详见 [运行说明](docs/OPERATIONS.md)。
 
@@ -76,7 +78,7 @@ Set-Location ..
 .\scripts\schedule.ps1
 ```
 
-来源、种子和预算在 [配置文件](config/sources.yaml) 中编辑。命令行后端直接读取进程环境变量；双击启动器和 Docker Compose 会读取 `.env`。可参考 `.env.example`，为服务端设置 `GITHUB_TOKEN`、`GITHUB_RANK_DB` 和 `GITHUB_RANK_CONFIG`。
+在 [配置文件](config/sources.yaml) 中编辑来源、种子和采集预算。命令行、Windows 快捷入口和 Docker Compose 均可读取项目根目录的 `.env`。参见 [环境变量示例](.env.example)，按需配置 GitHub Token、数据路径和摘要模型。
 
 API 限流时会尝试公开页面结构化精确计数和 Releases Atom；页面不提供的字段保持缺失。正式周/月榜只按实际端点计算净增；潜力分另需双周期历史、覆盖率与足够参照样本。详情和来源面板展示相应状态。
 
@@ -109,7 +111,7 @@ Windows 受限沙箱中，pytest 临时目录需指定到工作区，例如 `--b
 # 暂停/恢复某个来源；保留已采集内容。
 .\.venv\Scripts\python.exe -m github_rank.cli sources disable deepmind
 .\.venv\Scripts\python.exe -m github_rank.cli sources enable deepmind
-# 配置现有 Ollama 服务后才启用模型摘要；未配置会明确返回 not_configured。
+# 配置第一个模型后，生成一小批项目中文简介。
 .\.venv\Scripts\python.exe -m github_rank.cli summarize --kind news --limit 5
 ```
 

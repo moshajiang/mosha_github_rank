@@ -83,10 +83,11 @@ def create_app(settings=None):
         jobs = db.rows("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 8")
         for job in jobs:
             job["report"] = json.loads(job["report"])
+        summary_configured = settings.summary_configuration_error is None
         return {"as_of": utcnow(), "counts": counts, "last_snapshot": last_snapshot,
                 "last_news": last_news, "github_token_configured": bool(settings.github_token),
-                "summary_mode": "ollama" if settings.summary_model else "template", "jobs": jobs,
-                "summary_model_configured": bool(settings.summary_model),
+                "summary_mode": settings.summary_provider if summary_configured else "template", "jobs": jobs,
+                "summary_model_configured": summary_configured,
                 "summary_daily_limit": settings.summary_daily_limit,
                 "summary_attempts_today": db.rows("SELECT count(*) AS n FROM summary_attempts WHERE day=?", (datetime.now(timezone(timedelta(hours=8))).date().isoformat(),))[0]["n"],
                 "note": "已跟踪候选池排行；不代表全部 GitHub。无完整历史时显示观察中。"}

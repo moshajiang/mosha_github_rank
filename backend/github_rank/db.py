@@ -14,6 +14,10 @@ def dumps(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+class LeaseBusyError(RuntimeError):
+    pass
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS repositories (
  id INTEGER PRIMARY KEY, full_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -216,7 +220,7 @@ class Database:
             try:
                 con.execute("INSERT INTO leases VALUES(?,?,?)", (name, owner, expiry))
             except sqlite3.IntegrityError as exc:
-                raise RuntimeError(f"Another {name} task is running") from exc
+                raise LeaseBusyError(f"Another {name} task is running") from exc
         try:
             yield
         finally:

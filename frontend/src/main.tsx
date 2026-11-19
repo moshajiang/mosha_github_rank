@@ -2085,7 +2085,7 @@ function App() {
                 ? "已配置服务端 GitHub Token。"
                 : "使用公开接口，小批量采集受未认证额度限制。"}
               {status.data?.summary_model_configured
-                ? `已配置本地摘要模型；今日调用 ${status.data.summary_attempts_today}/${status.data.summary_daily_limit}，成功结果按缓存展示。`
+                ? `已配置${status.data.summary_mode === "inkstone" ? "书生·端砚" : " Ollama"} 摘要，今日调用 ${status.data.summary_attempts_today}/${status.data.summary_daily_limit} 次。`
                 : "当前摘要方式：原文与中文模板，未配置模型。"}
             </p>
             <div className="sources-list">

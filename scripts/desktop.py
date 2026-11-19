@@ -20,6 +20,7 @@ import webbrowser
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 from github_rank.identity import workspace_id
+from github_rank.settings import read_dotenv
 
 DATA = ROOT / "data"
 STATE = DATA / "desktop-process.json"
@@ -136,19 +137,7 @@ def launcher_lock():
 
 
 def child_environment():
-    env = os.environ.copy()
-    dotenv = ROOT / ".env"
-    if dotenv.exists():
-        for line in dotenv.read_text(encoding="utf-8-sig").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key, value = key.strip(), value.strip()
-            if key == "GITHUB_TOKEN" or key.startswith("GITHUB_RANK_"):
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                    value = value[1:-1]
-                env[key] = value
+    env = {**os.environ, **read_dotenv(ROOT / ".env")}
     env["PYTHONUTF8"] = "1"
     return env
 
@@ -251,7 +240,7 @@ def stop():
 
 def main():
     parser = argparse.ArgumentParser(description="GitHub Rank desktop launcher")
-    parser.add_argument("action", choices=["launch", "stop"], nargs="?", default="launch")
+    parser.add_argument("action", choices=["launch", "stop", "update"], nargs="?", default="launch")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--quiet", action="store_true")
@@ -261,6 +250,9 @@ def main():
     if not 1 <= args.port <= 65535:
         parser.error("Port must be between 1 and 65535")
     try:
+        if args.action == "update":
+            return subprocess.call([str(PYTHON), "-m", "github_rank.cli", "update"],
+                                   cwd=ROOT, env=child_environment())
         if args.action == "launch":
             result = start(args.port, not args.no_browser)
             if args.quiet and sys.stdout:

@@ -7,8 +7,9 @@ from conftest import add_repo
 from github_rank.api import create_app
 from github_rank.db import Database, SCHEMA, dumps
 from github_rank.jobs import collect, register_sources
+from github_rank.settings import Settings
 from github_rank.sources import set_enabled, source_states
-from github_rank.summaries import OllamaProvider, SummaryError, summarize, annotate_summaries
+from github_rank.summaries import InkStoneProvider, OllamaProvider, SummaryError, summarize, annotate_summaries
 from github_rank.transport import Fetcher
 from fastapi.testclient import TestClient
 
@@ -88,6 +89,110 @@ def test_ollama_request_has_schema_and_no_tools():
 def test_remote_insecure_summary_endpoint_rejected():
     with pytest.raises(SummaryError, match="HTTPS"):
         OllamaProvider("http://example.com", "test")
+
+
+def test_inkstone_defaults_and_cli_dotenv(monkeypatch, tmp_path):
+    monkeypatch.setattr("github_rank.settings.ROOT", tmp_path)
+    monkeypatch.delenv("GITHUB_RANK_SUMMARY_PROVIDER", raising=False)
+    monkeypatch.delenv("GITHUB_RANK_SUMMARY_MODEL", raising=False)
+    monkeypatch.delenv("GITHUB_RANK_INKSTONE_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "GITHUB_RANK_SUMMARY_PROVIDER=inkstone\nGITHUB_RANK_INKSTONE_API_KEY='example-token'\n",
+        encoding="utf-8-sig",
+    )
+    configured = Settings.from_env()
+    assert configured.summary_model == "intern-s2"
+    assert configured.summary_configuration_error is None
+    assert configured.inkstone_api_key == "example-token" and "example-token" not in repr(configured)
+    monkeypatch.setenv("GITHUB_RANK_SUMMARY_MODEL", "another-model")
+    assert Settings.from_env().summary_model == "another-model"
+    assert Settings.from_env({}).summary_provider == "ollama"
+
+
+def test_inkstone_projects_are_validated_cached_and_displayed(settings, monkeypatch):
+    settings = replace(settings, summary_provider="inkstone", summary_model="intern-s2",
+                       inkstone_api_key="example-token", summary_url="https://example.net")
+    db = Database(settings.db_path)
+    repo = add_repo(db)
+    calls = []
+
+    def handler(request):
+        calls.append(request.url)
+        assert str(request.url) == "https://discovery-api.intern-ai.org.cn/v1/chat/completions"
+        assert request.headers["Authorization"] == "Bearer example-token"
+        body = json.loads(request.content)
+        assert body["model"] == "intern-s2" and body["max_tokens"] == 650
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"]["json_schema"]["strict"] is True
+        assert body["stream"] is False and "tools" not in body
+        prompt = json.loads(body["messages"][1]["content"])
+        assert prompt["kind"] == "project" and "example-token" not in str(prompt)
+        output = {"summary": SUMMARY, "evidence": [{"source_id": "description", "quote": repo["description"]}]}
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "stop", "message": {"content": dumps(output)}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 80},
+        })
+
+    monkeypatch.setattr("github_rank.summaries.InkStoneProvider",
+                        lambda key, model: InkStoneProvider(key, model, httpx.MockTransport(handler)))
+    assert summarize(settings, db)["generated"] == 1
+    assert summarize(settings, db)["cached"] == 1
+    assert len(calls) == 1
+    assert db.rows("SELECT model,prompt_tokens,output_tokens FROM summary_attempts") == [
+        {"model": "inkstone/intern-s2", "prompt_tokens": 100, "output_tokens": 80}
+    ]
+    client = TestClient(create_app(settings))
+    status = client.get("/api/data-status").json()
+    assert status["summary_mode"] == "inkstone" and status["summary_model_configured"]
+    assert "example-token" not in dumps(status)
+    detail = client.get("/api/projects/owner/repo-1").json()
+    assert detail["summary_zh"] == SUMMARY and detail["description"] == repo["description"]
+    assert detail["summary_meta"]["evidence"][0]["url"] == repo["url"]
+
+
+def test_inkstone_missing_key_or_http_error_never_repeats_requests(settings, db):
+    add_repo(db)
+    add_repo(db, 2)
+    settings = replace(settings, summary_provider="inkstone", summary_model="intern-s2")
+    assert summarize(settings, db)["status"] == "not_configured"
+    assert db.rows("SELECT id FROM summary_attempts") == []
+
+    def handler(request):
+        return httpx.Response(429, text="Upstream details containing example-token")
+
+    provider = InkStoneProvider("example-token", settings.summary_model, httpx.MockTransport(handler))
+    try:
+        report = summarize(replace(settings, inkstone_api_key="example-token"), db, provider=provider)
+    finally:
+        provider.close()
+    assert report["status"] == "provider_unavailable" and report["failed"] == 1
+    assert db.rows("SELECT status,error FROM summary_attempts") == [{"status": "failed", "error": "InkStone HTTP 429"}]
+    assert "example-token" not in dumps(report)
+
+
+def test_update_queue_prioritizes_untried_projects_and_counts_rejected_usage(settings, db):
+    add_repo(db, 1)
+    add_repo(db, 2, description="Another open source tool")
+    add_repo(db, 3, description="")
+    settings = replace(settings, summary_provider="inkstone", summary_model="intern-s2", inkstone_api_key="example-token")
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "length", "message": {"content": "{}"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 650},
+        })
+
+    provider = InkStoneProvider("example-token", settings.summary_model, httpx.MockTransport(handler))
+    try:
+        first = summarize(settings, db, limit=1, provider=provider)
+    finally:
+        provider.close()
+    assert first["errors"][0]["id"] == "1" and first["remaining"] == 2 and first["skipped"] == 1
+    assert db.rows("SELECT output_tokens FROM summary_attempts") == [{"output_tokens": 650}]
+    second = summarize(settings, db, limit=1, provider=FakeProvider())
+    assert second["generated"] == 1 and second["remaining"] == 1
+    assert db.rows("SELECT entity_id FROM summaries") == [{"entity_id": "2"}]
 
 
 def test_schema_migration_preserves_existing_repositories(tmp_path):
