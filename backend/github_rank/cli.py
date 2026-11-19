@@ -13,6 +13,7 @@ from .repositories import repository_items, edit_repository, edit_history
 from .scheduler import Scheduler, scheduler_status, request_stop
 from .news_events import news_items, edit_events, edit_history as news_edit_history
 from .summary_eval import prepare_evaluation, evaluation_report, write_json
+from .coverage import coverage_report, coverage_markdown
 
 
 def main():
@@ -27,6 +28,10 @@ def main():
     task.add_argument("--repo-limit", type=int)
     task.add_argument("--force", action="store_true")
     commands.add_parser("publish")
+    coverage = commands.add_parser("coverage", help="Inspect data gaps without fetching or writing to the database")
+    coverage.add_argument("--limit",type=int,default=20,help="Maximum refresh candidates, 0 to 100")
+    coverage.add_argument("--format",choices=("json","markdown"),default="json")
+    coverage.add_argument("--output",help="Write a new .json or .md file without overwriting")
     backup = commands.add_parser("backup")
     backup.add_argument("path")
     schedule = commands.add_parser("schedule")
@@ -86,10 +91,27 @@ def main():
     args = parser.parse_args()
     settings = Settings.from_env()
     db = Database(settings.db_path)
-    if args.command != "summary-eval":
+    if args.command not in ("summary-eval","coverage"):
         register_sources(db, settings.config())
     if args.command == "init":
         print("Database and source configuration initialized")
+    elif args.command == "coverage":
+        from pathlib import Path
+        try:
+            report=coverage_report(db,args.limit)
+            rendered=json.dumps(report,ensure_ascii=False,indent=2) if args.format=="json" else coverage_markdown(report)
+            if args.output:
+                path=Path(args.output)
+                if path.suffix.lower()!=(".json" if args.format=="json" else ".md"):
+                    raise ValueError("Output extension must match the selected format")
+                path.parent.mkdir(parents=True,exist_ok=True)
+                with path.open("x",encoding="utf-8") as stream:
+                    stream.write(rendered+"\n")
+                print(json.dumps({"output":str(path),"as_of":report["as_of"],"refresh_candidate_total":report["refresh_candidate_total"]},ensure_ascii=False))
+            else:
+                print(rendered)
+        except (ValueError,OSError) as exc:
+            parser.error(str(exc))
     elif args.command == "publish":
         print(json.dumps(publish_rankings(db)))
     elif args.command == "backup":

@@ -8,6 +8,19 @@ from .repositories import overrides_by_repo, apply_override
 
 
 ALGORITHM = "potential-v1"
+ELIGIBILITY_REASONS = {
+    "inactive_repository": "归档、禁用或 Fork 项目",
+    "missing_end": "缺少当前统计端点",
+    "missing_start": "缺少本周期起点",
+    "non_positive_growth": "本周期没有正净增长",
+    "missing_previous": "缺少上一周期起点",
+    "size_outside_range": "当前 Star 不在 50—20000 范围",
+    "growth_below_threshold": "净增长低于潜力榜门槛",
+    "missing_push_time": "未记录推送时间",
+    "push_too_old": "最近推送超过 30 天",
+    "insufficient_coverage": "双周期观测日覆盖率不足 90%",
+    "insufficient_peers": "合格参照项目不足 30 个",
+}
 
 
 def dt(value):
@@ -57,9 +70,15 @@ def compute_rankings(db, window=7, as_of=None):
                      "observed_since": min((s["observed_at"] for s in snapshots), default=None),
                      "history_points": len(snapshots), "window_days": window})
         reasons = []
+        hot_blockers, potential_blockers = [], []
         excluded = repo.get("archived") or repo.get("disabled") or repo.get("is_fork")
         if excluded:
             reasons.append("归档、禁用或 Fork 项目不进入默认榜单")
+            hot_blockers.append("inactive_repository")
+        if not end:
+            hot_blockers.append("missing_end")
+        if not start:
+            hot_blockers.append("missing_start")
         if end and start:
             repo["delta_stars"] = end["stars"] - start["stars"]
             repo["delta_forks"] = end["forks"] - start["forks"]
@@ -68,10 +87,26 @@ def compute_rankings(db, window=7, as_of=None):
             repo["hot_eligible"] = not excluded and repo["delta_stars"] > 0
             if repo["delta_stars"] <= 0:
                 reasons.append("该周期没有正净增长")
+                hot_blockers.append("non_positive_growth")
         else:
             reasons.append(f"观察中：尚无完整 {window} 天端点")
         coverage = len({s["day"] for s in snapshots if timestamp - timedelta(days=2 * window, hours=6) <= dt(s["observed_at"]) <= timestamp + timedelta(hours=6)}) / (2 * window + 1)
         repo["coverage"] = min(coverage, 1)
+        potential_blockers.extend(hot_blockers)
+        threshold = 20 if window == 7 else 50
+        if not previous:
+            potential_blockers.append("missing_previous")
+        if end and not 50 <= end["stars"] <= 20_000:
+            potential_blockers.append("size_outside_range")
+        if repo["delta_stars"] is not None and repo["delta_stars"] < threshold:
+            potential_blockers.append("growth_below_threshold")
+        if not repo.get("pushed_at"):
+            potential_blockers.append("missing_push_time")
+        elif timestamp - dt(repo["pushed_at"]) > timedelta(days=30):
+            potential_blockers.append("push_too_old")
+        if coverage < .9:
+            potential_blockers.append("insufficient_coverage")
+        repo["eligibility_reasons"] = {"hot": hot_blockers, "potential": potential_blockers}
         if end and start and previous:
             previous_delta = start["stars"] - previous["stars"]
             repo["acceleration"] = (repo["delta_stars"] - previous_delta) / max(abs(previous_delta), 20)
@@ -96,6 +131,7 @@ def compute_rankings(db, window=7, as_of=None):
         if len(peers) < 30:
             repo["potential_eligible"] = False
             repo["observation_note"] = "合格样本不足 30 个，暂不发布正式潜力分"
+            repo["eligibility_reasons"]["potential"].append("insufficient_peers")
             continue
         features = repo["_features"]
         values = [percentile(features[i], [p["_features"][i] for p in peers]) for i in range(3)] + features[3:]

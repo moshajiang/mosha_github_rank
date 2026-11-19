@@ -136,3 +136,11 @@ Windows 受限沙箱中，pytest 临时目录需指定到工作区，例如 `--b
 ~~~
 
 评估命令准备固定输入及人工审阅字段，不调用模型。未生成摘要时保持待生成、通过率为空；流程和本轮 70 条真实样本见 [摘要评估说明](docs/SUMMARY_EVALUATION.md)。
+
+## 数据覆盖体检
+
+~~~powershell
+.\.venv\Scripts\python.exe -m github_rank.cli coverage --format markdown --output data/coverage.md
+~~~
+
+报告列出过期项目、缺失字段、扫描范围、周/月榜阻塞原因和待刷新候选；输出文件须尚不存在。实时 JSON 可查询 [覆盖接口](http://127.0.0.1:8000/api/coverage)，口径与真实补采结果见 [数据覆盖说明](docs/COVERAGE.md)。

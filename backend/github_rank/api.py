@@ -20,6 +20,7 @@ from .scheduler import scheduler_status
 from .agent_resources import enrich_resource, resource_items, resource_catalog, duplicate_key, with_duplicates
 from .news_events import news_catalog, news_detail as get_news_detail
 from .library import resolve_library
+from .coverage import coverage_report
 
 
 def create_app(settings=None):
@@ -67,6 +68,10 @@ def create_app(settings=None):
         return {"as_of": now.isoformat(timespec="seconds"), "scheduler": scheduler_status(db, now),
                 "source_events": events, "oldest_repository_update": oldest,
                 "repositories_stale": bool(oldest and now-datetime.fromisoformat(oldest) > timedelta(hours=36))}
+
+    @app.get("/api/coverage")
+    def coverage(limit: int = Query(20, ge=0, le=100)):
+        return coverage_report(db, limit)
 
     @app.get("/api/data-status")
     def data_status():
