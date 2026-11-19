@@ -8,7 +8,7 @@ from .classify import classify_repo, CATEGORIES
 from .db import dumps, utcnow
 from .transport import FetchError, RateLimited
 from .repositories import normalize_name, apply_override, record_aliases
-from .agent_resources import resource_record, scan_resources
+from .agent_resources import resource_record, scan_resources, last_complete_scan
 
 
 REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -80,16 +80,21 @@ def github_page_data(fetcher, name):
     }
 
 
-def collect_repo(db, fetcher, name, resource_limit=30, tree_limit=20, depth_limit=12, force_resources=False):
+def collect_repo(db, fetcher, name, resource_limit=30, tree_limit=20, depth_limit=12,
+                 force_resources=False, *, require_api=False, expected_id=None):
     name = normalize_name(name)
     fallback_reason = None
     try:
         repo = github_json(fetcher, f"/repos/{name}")
     except RateLimited as exc:
+        if require_api:
+            raise
         fallback_reason = str(exc)
         repo = github_page_data(fetcher, name)
     if repo.get("private") or repo.get("visibility", "public") != "public":
         raise FetchError("Only public repositories can be tracked")
+    if expected_id is not None and repo["id"] != expected_id:
+        raise FetchError("Repository identity changed. Verify the tracked GitHub ID before rescanning.")
     now = utcnow()
     category, agent_types = classify_repo(repo)
     # Retain a good previous README when content is temporarily unavailable.
@@ -126,14 +131,17 @@ def collect_repo(db, fetcher, name, resource_limit=30, tree_limit=20, depth_limi
         "resource_scan": old.get("resource_scan", "not_scanned"),
         "data_source": repo.get("_data_source", "github_api"),
     }
-    resources = []
+    resources, scanned_this_run = [], None
     if scan_agent_types or force_resources:
-        resources, report = scan_resources(repo, fetcher, resource_limit, tree_limit, depth_limit)
-        data["resource_scan"] = report["status"]
-        data["resource_scan_report"] = report
-        warnings.extend(report["warnings"][:20])
+        resources, scanned_this_run = scan_resources(repo, fetcher, resource_limit, tree_limit, depth_limit)
+        data["resource_scan"] = scanned_this_run["status"]
+        data["resource_scan_report"] = scanned_this_run
+        warnings.extend(scanned_this_run["warnings"][:20])
     elif old.get("resource_scan_report"):
         data["resource_scan_report"] = old["resource_scan_report"]
+    complete = last_complete_scan(data) or last_complete_scan(old)
+    if complete:
+        data["last_complete_resource_scan"] = complete
     with db.connect() as con:
         con.execute(
             "INSERT INTO repositories VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
@@ -143,7 +151,7 @@ def collect_repo(db, fetcher, name, resource_limit=30, tree_limit=20, depth_limi
         record_aliases(con, repo["id"], repo["full_name"], [name, old.get("full_name")], now)
         # First successful observation per UTC day is immutable; reruns never fabricate growth.
         con.execute("INSERT OR IGNORE INTO snapshots VALUES(?,?,?,?,?)", (repo["id"], now[:10], now, repo["stargazers_count"], repo["forks_count"]))
-        if data["resource_scan"] == "complete":
+        if scanned_this_run and scanned_this_run["status"] == "complete":
             con.execute("DELETE FROM resources WHERE repo_id=?", (repo["id"],))
         for record in resources:
             con.execute("INSERT INTO resources VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at",

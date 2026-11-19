@@ -3,6 +3,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 import json
 import re
+from .agent_resources import last_complete_scan
 from .ranking import compute_rankings, dt, ELIGIBILITY_REASONS
 from .repositories import apply_override, overrides_by_repo
 from .scheduler import scheduler_status
@@ -17,14 +18,6 @@ REFRESH_REASONS = {
 }
 
 
-class ReadView:
-    def __init__(self, connection):
-        self.connection = connection
-
-    def rows(self, sql, params=()):
-        return [dict(row) for row in self.connection.execute(sql, params)]
-
-
 def coverage_report(db, limit=20, now=None):
     if type(limit) is not int or not 0 <= limit <= 100:
         raise ValueError("Candidate limit must be between 0 and 100")
@@ -33,9 +26,7 @@ def coverage_report(db, limit=20, now=None):
         raise ValueError("Use a timezone-aware audit time")
     now = now.astimezone(timezone.utc)
     stamp = now.isoformat(timespec="seconds")
-    with db.connect() as connection:
-        connection.execute("BEGIN")
-        view = ReadView(connection)
+    with db.read_view() as view:
         overrides = overrides_by_repo(view)
         records = view.rows("SELECT * FROM repositories ORDER BY id")
         snapshots = view.rows("SELECT * FROM snapshots ORDER BY observed_at")
@@ -73,7 +64,7 @@ def coverage_report(db, limit=20, now=None):
             "blockers": {kind:dict(Counter(code for r in rank["items"] for code in r["eligibility_reasons"][kind])) for kind in ("hot","potential")},
         })
     candidates = []
-    scan_states, stale_scans = Counter(), 0
+    scan_states, stale_scans, multi_resource_complete = Counter(), 0, 0
     for row, item in active:
         agent = bool(item.get("agent_types") or item.get("resource_scan_report"))
         scan = item.get("resource_scan_report") or {}
@@ -82,6 +73,9 @@ def coverage_report(db, limit=20, now=None):
         if agent:
             scan_states[item.get("resource_scan","not_scanned")] += 1
             stale_scans += scan_stale
+            complete = last_complete_scan(item)
+            if complete and complete["resource_count"] >= 2:
+                multi_resource_complete += 1
         reasons = []
         if now-dt(row["updated_at"]) > timedelta(hours=36):
             reasons.append("metadata_stale")
@@ -112,7 +106,8 @@ def coverage_report(db, limit=20, now=None):
         "rankings":windows, "reason_labels":ELIGIBILITY_REASONS,
         "resources":{"included_records":len(resource_data),"excluded_records":len(resources)-len(resource_data),
                      "with_file_hash":sum(bool(re.fullmatch("[a-f0-9]{64}",r.get("content_hash") or "")) for r in resource_data),
-                     "scan_repositories":dict(scan_states),"stale_or_undated_scans":stale_scans},
+                     "scan_repositories":dict(scan_states),"stale_or_undated_scans":stale_scans,
+                     "last_complete_multiresource_repositories":multi_resource_complete},
         "news_sources":{"total":len(sources),"freshness":dict(Counter(s["freshness"] for s in sources)),
                         "items":[{key:s.get(key) for key in ("id","name","enabled","status","freshness","last_success_at")} for s in sources]},
         "scheduler":{key:scheduler.get(key) for key in ("status","online","started_at","heartbeat_at","heartbeat_age_seconds")},
@@ -151,6 +146,7 @@ def coverage_markdown(report):
     rows.extend(["","## 字段与扫描","","- 未记录/未声明字段："+text(json.dumps(report["repositories"]["unavailable_fields"],ensure_ascii=False)),
                  "- 仓库数据来源："+text(json.dumps(report["repositories"]["data_sources"],ensure_ascii=False)),
                  "- 资源扫描状态："+text(json.dumps(report["resources"]["scan_repositories"],ensure_ascii=False)),
+                 f"- 有完整扫描证据、且该轮识别至少两项资源的仓库：{report['resources']['last_complete_multiresource_repositories']}。",
                  f"- 资源文件 hash 覆盖：{report['resources']['with_file_hash']} / {report['resources']['included_records']}。",
                  "- 资讯来源新鲜度："+text(json.dumps(report["news_sources"]["freshness"],ensure_ascii=False)),
                  "","## 待刷新候选","",

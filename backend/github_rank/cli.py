@@ -14,6 +14,7 @@ from .scheduler import Scheduler, scheduler_status, request_stop
 from .news_events import news_items, edit_events, edit_history as news_edit_history
 from .summary_eval import prepare_evaluation, evaluation_report, write_json
 from .coverage import coverage_report, coverage_markdown
+from .resource_rescan import plan_rescan, rescan_repositories, MAX_RESCAN_REPOSITORIES
 
 
 def main():
@@ -64,6 +65,10 @@ def main():
     add = project_actions.add_parser("add", help="Immediately collect one public GitHub repository")
     add.add_argument("repository")
     add.add_argument("--scan-resources", action="store_true", help="Scan manifests even when Agent keyword classification did not match")
+    rescan = project_actions.add_parser("rescan", help="Revisit incomplete Agent resource scans using the GitHub API")
+    rescan.add_argument("repositories", nargs="*", metavar="OWNER/REPO", help="Override automatic selection with tracked repositories")
+    rescan.add_argument("--limit", type=int, default=10, help=f"Maximum repositories, 1 to {MAX_RESCAN_REPOSITORIES}")
+    rescan.add_argument("--dry-run", action="store_true", help="Show the plan without fetching or collecting")
     edit = project_actions.add_parser("set", help="Apply a persistent local classification or visibility override")
     edit.add_argument("repository")
     edit.add_argument("--category", choices=CATEGORIES)
@@ -91,7 +96,7 @@ def main():
     args = parser.parse_args()
     settings = Settings.from_env()
     db = Database(settings.db_path)
-    if args.command not in ("summary-eval","coverage"):
+    if args.command not in ("summary-eval","coverage") and not (args.command == "projects" and args.action == "rescan"):
         register_sources(db, settings.config())
     if args.command == "init":
         print("Database and source configuration initialized")
@@ -157,6 +162,11 @@ def main():
         try:
             if args.action == "add":
                 output = add_repository(settings, db, args.repository, force_resources=args.scan_resources)
+            elif args.action == "rescan":
+                if args.dry_run:
+                    output = plan_rescan(db, args.repositories, args.limit)
+                else:
+                    output = rescan_repositories(settings, db, args.repositories, args.limit)
             elif args.action == "set":
                 item = edit_repository(db, args.repository, category=args.category, agent_types=args.agent_types,
                                        excluded=args.excluded, reason=args.reason)

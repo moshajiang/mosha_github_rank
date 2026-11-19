@@ -5,6 +5,9 @@ import httpx
 from .db import utcnow
 
 
+ANONYMOUS_GITHUB_BATCH_LIMIT = 45
+
+
 class FetchError(RuntimeError):
     pass
 
@@ -35,6 +38,12 @@ class Fetcher:
     def close(self):
         self.client.close()
 
+    @property
+    def github_core_limited(self):
+        return "core" in self.github_blocked or (
+            not self.token and self.github_requests >= ANONYMOUS_GITHUB_BATCH_LIMIT
+        )
+
     def get_resource(self, url):
         if self.resource_requests >= self.resource_request_limit:
             raise ResourceBudgetExceeded("Resource request budget reached for this batch")
@@ -42,8 +51,11 @@ class Fetcher:
         return self.get(url)
 
     def get(self, url):
-        if urlsplit(url).scheme != "https":
+        parts = urlsplit(url)
+        if parts.scheme != "https":
             raise FetchError("Only HTTPS sources are supported")
+        github = parts.hostname == "api.github.com"
+        bucket = "search" if parts.path.startswith("/search/") else "core"
         cache = self.db.rows("SELECT * FROM http_cache WHERE url=?", (url,))
         headers = {}
         if cache:
@@ -51,7 +63,7 @@ class Fetcher:
                 headers["If-None-Match"] = cache[0]["etag"]
             if cache[0]["modified"]:
                 headers["If-Modified-Since"] = cache[0]["modified"]
-        if urlsplit(url).hostname == "api.github.com":
+        if github:
             headers["Accept"] = "application/vnd.github+json"
             if self.token:
                 headers["Authorization"] = "Bearer " + self.token
@@ -59,14 +71,15 @@ class Fetcher:
             if self.cancelled and self.cancelled():
                 raise CollectionCancelled("Collection stop requested")
             try:
-                if urlsplit(url).hostname == "api.github.com":
-                    bucket = "search" if urlsplit(url).path.startswith("/search/") else "core"
+                if github:
                     if bucket in self.github_blocked:
                         raise RateLimited(f"GitHub {bucket} rate limit active for this batch")
-                    if not self.token and self.github_requests >= 45:
-                        raise RateLimited("Unauthenticated batch budget reached (45 requests); configure a server token for larger collections")
+                    if not self.token and self.github_requests >= ANONYMOUS_GITHUB_BATCH_LIMIT:
+                        raise RateLimited(f"Unauthenticated batch budget reached ({ANONYMOUS_GITHUB_BATCH_LIMIT} requests)")
                     self.github_requests += 1
                 with self.client.stream("GET", url, headers=headers) as response:
+                    if github and response.headers.get("X-RateLimit-Remaining") == "0":
+                        self.github_blocked.add(response.headers.get("X-RateLimit-Resource", bucket))
                     if response.status_code == 304:
                         if not cache:
                             raise FetchError("304 without a cached representation")
@@ -78,11 +91,8 @@ class Fetcher:
                         )
                     )
                     if limited:
-                        if urlsplit(url).hostname == "api.github.com":
-                            if response.headers.get("X-RateLimit-Remaining") == "0":
-                                self.github_blocked.add(response.headers.get("X-RateLimit-Resource", bucket))
-                            else:
-                                self.github_blocked.update(("core", "search"))
+                        if github and response.headers.get("X-RateLimit-Remaining") != "0":
+                            self.github_blocked.update(("core", "search"))
                         reset = response.headers.get("Retry-After") or response.headers.get("X-RateLimit-Reset", "unknown")
                         raise RateLimited(f"Rate limit reached; retry/reset: {reset}")
                     if response.status_code >= 500 and attempt < 2:

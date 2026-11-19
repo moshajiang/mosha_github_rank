@@ -148,6 +148,14 @@ COMMIT;
 """
 
 
+class ReadView:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def rows(self, sql, params=()):
+        return [dict(row) for row in self.connection.execute(sql, params)]
+
+
 class Database:
     def __init__(self, path):
         self.path = Path(path)
@@ -186,6 +194,13 @@ class Database:
     def rows(self, sql, params=()):
         with self.connect() as con:
             return [dict(row) for row in con.execute(sql, params)]
+
+    @contextmanager
+    def read_view(self):
+        with self.connect() as con:
+            con.execute("PRAGMA query_only=ON")
+            con.execute("BEGIN")
+            yield ReadView(con)
 
     def execute(self, sql, params=()):
         with self.connect() as con:

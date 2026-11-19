@@ -1,6 +1,6 @@
 # Agent 资源识别与来源证据
 
-更新：2026-10-31。目录支持 Skills、Claude Code 插件清单和带 MCP Registry schema 声明的 server.json。元数据只用于展示，不安装资源或运行清单中的指令。
+更新日期为 2026-11-19。目录支持 Skills、Claude Code 插件清单和带 MCP Registry schema 声明的 server.json。
 
 ## 扫描方式与预算
 
@@ -40,6 +40,18 @@ GET /api/agent-resources 支持 kind=skill|plugin|mcp、q、limit、offset；gro
 
 自动化测试覆盖截断补扫、预算、固定 commit、失败保留、完整扫描清理、符号链接/大文件、普通 server.json 排除、敏感字段不复制、去重/搜索/排除一致及旧数据降级。
 
-scripts/verify_resource_samples.py 会读取 10 个真实仓库，将各自覆盖状态、读取数和限制原因写入本地 data/resource-sample-report.json。先做一致性备份。当前无 GitHub Token，公共 API 限流下的页面结果不能算作 10 个多资源仓库的全量识别。
+## 定向补扫
+
+~~~powershell
+.\.venv\Scripts\python.exe -m github_rank.cli projects rescan --dry-run --limit 10
+.\.venv\Scripts\python.exe -m github_rank.cli projects rescan --limit 10
+.\.venv\Scripts\python.exe -m github_rank.cli projects rescan owner/repository owner/second-repo
+~~~
+
+预览读取已有记录。自动选择范围是已跟踪、仍需扫描、且有 Agent 分类或资源证据的仓库，优先尚无完整扫描证据的多资源仓库。显式指定项目按所给顺序执行，接受库内曾用名称并核对 GitHub 数字 ID。单次可选 1 到 30 个项目。
+
+补扫使用同一个 REST 客户端和同一把采集锁。已有采集任务占用锁时会报告忙碌。API 或资源主机限流、整批资源请求额度不足时，本批停止并标记待续条目。原有日常采集仍可使用公开页面。公开 API 的额度和重置条件见 [GitHub REST 限流文档](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
+
+命令输出与任务日志记录每个仓库的提交、目录状态、候选文件数、实际读取数、有效资源数和中断原因。覆盖体检汇总有完整证据且当时识别至少两项资源的仓库。之后的部分扫描会保留那次完整扫描的提交和时间，同时更新当次扫描状态。
 
 目前保留最新资源记录及证据 commit；完整版本档案、安装遥测、跨格式语义去重和资源运行测试仍未实现。

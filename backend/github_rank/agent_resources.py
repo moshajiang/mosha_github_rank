@@ -16,6 +16,18 @@ from .repositories import canonical_resource, overrides_by_repo
 MAX_FILE_BYTES = 200_000
 
 
+def last_complete_scan(repo):
+    report = repo.get("resource_scan_report") or {}
+    if report.get("status") == "complete" and report.get("tree_complete") and report.get("commit"):
+        return {
+            "commit": report["commit"],
+            "observed_at": report.get("observed_at"),
+            "read_files": report.get("read_files"),
+            "resource_count": len(report.get("resource_ids", [])),
+        }
+    return repo.get("last_complete_resource_scan")
+
+
 def resource_path(path):
     if not isinstance(path, str) or not path or path.startswith("/") or "\\" in path or any(p in ("", ".", "..") for p in path.split("/")):
         return False
@@ -225,6 +237,8 @@ def scan_resources(repo, fetcher, resource_limit=30, tree_limit=20, depth_limit=
             report["reasons"].append("tree_unavailable")
             if isinstance(exc, ResourceBudgetExceeded):
                 report["reasons"].append("batch_resource_budget")
+            elif isinstance(exc, RateLimited):
+                report["reasons"].append("github_api_limit")
             report["warnings"].append(f"目录扫描：{type(exc).__name__}")
             if not sha or not paths:
                 report["status"] = "failed"
@@ -252,6 +266,9 @@ def scan_resources(repo, fetcher, resource_limit=30, tree_limit=20, depth_limit=
             report["invalid_files"] += 1
         except ResourceBudgetExceeded:
             report["reasons"].append("batch_resource_budget")
+            break
+        except RateLimited:
+            report["reasons"].append("resource_rate_limit")
             break
         except FetchError as exc:
             report["reasons"].append("file_fetch_failed")
