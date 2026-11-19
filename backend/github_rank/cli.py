@@ -69,6 +69,8 @@ def main():
     rescan.add_argument("repositories", nargs="*", metavar="OWNER/REPO", help="Override automatic selection with tracked repositories")
     rescan.add_argument("--limit", type=int, default=10, help=f"Maximum repositories, 1 to {MAX_RESCAN_REPOSITORIES}")
     rescan.add_argument("--dry-run", action="store_true", help="Show the plan without fetching or collecting")
+    rescan.add_argument("--resume", nargs="?", const="latest", metavar="BATCH_ID",
+                        help="Resume deferred repositories from the latest finished rescan or a specified batch")
     edit = project_actions.add_parser("set", help="Apply a persistent local classification or visibility override")
     edit.add_argument("repository")
     edit.add_argument("--category", choices=CATEGORIES)
@@ -164,9 +166,9 @@ def main():
                 output = add_repository(settings, db, args.repository, force_resources=args.scan_resources)
             elif args.action == "rescan":
                 if args.dry_run:
-                    output = plan_rescan(db, args.repositories, args.limit)
+                    output = plan_rescan(db, args.repositories, args.limit, resume_from=args.resume)
                 else:
-                    output = rescan_repositories(settings, db, args.repositories, args.limit)
+                    output = rescan_repositories(settings, db, args.repositories, args.limit, resume_from=args.resume)
             elif args.action == "set":
                 item = edit_repository(db, args.repository, category=args.category, agent_types=args.agent_types,
                                        excluded=args.excluded, reason=args.reason)

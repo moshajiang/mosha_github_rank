@@ -214,3 +214,64 @@ def test_interrupted_batch_keeps_finished_scans_and_releases_lease(settings, db)
     assert report["counts"] == {"complete": 1, "interrupted": 1, "deferred": 1}
     assert db.rows("SELECT repo_id FROM snapshots") == [{"repo_id": 1}]
     assert db.rows("SELECT name FROM leases") == []
+
+
+def recorded_batch(db, items):
+    stamp = utcnow()
+    db.execute("INSERT INTO job_runs VALUES(?,?,?,?,?,?)", (
+        "previous-batch", "resource_rescan", stamp, stamp, "partial",
+        dumps({"repositories": items}),
+    ))
+
+
+def test_resume_follows_id_and_skips_completed_or_excluded_repositories(db):
+    renamed = tracked(db, 1)
+    add_repo(db, 2, resource_scan="complete")
+    tracked(db, 3)
+    edit_repository(db, "owner/repo-3", excluded=True, reason="Exclude from scans")
+    renamed.update(full_name="other/repo-1", url="https://github.com/other/repo-1")
+    db.execute("UPDATE repositories SET full_name=?,data=? WHERE id=1", (renamed["full_name"], dumps(renamed)))
+    tracked(db, 4, full_name="owner/repo-1")
+    recorded_batch(db, [
+        {"id": 1, "name": "owner/repo-1", "status": "deferred"},
+        {"id": 2, "status": "deferred"},
+        {"id": 3, "status": "deferred"},
+        {"id": 4, "status": "complete"},
+    ])
+    plan = plan_rescan(db, resume_from="latest")
+    assert plan["resumed_from"] == "previous-batch"
+    assert [(item["id"], item["name"]) for item in plan["candidates"]] == [(1, "other/repo-1")]
+    with pytest.raises(ValueError, match="Choose explicit repositories"):
+        plan_rescan(db, ["owner/repo-1"], resume_from="latest")
+    with pytest.raises(ValueError, match="No matching finished"):
+        plan_rescan(db, resume_from="missing")
+
+
+def test_resume_retries_budget_interruptions_and_carries_remainder(settings, db):
+    for repo_id in range(1, 5):
+        tracked(db, repo_id)
+    recorded_batch(db, [
+        {"id": 1, "status": "partial", "reasons": ["batch_resource_budget"]},
+        {"id": 2, "status": "interrupted"},
+        {"id": 3, "status": "deferred"},
+        {"id": 4, "status": "failed", "error": "Upstream HTTP 404"},
+    ])
+    fetcher, calls = mock_upstream(db)
+    try:
+        first = rescan_repositories(settings, db, limit=1, resume_from="previous-batch", fetcher=fetcher)
+    finally:
+        fetcher.close()
+    assert first["status"] == "partial"
+    assert first["counts"] == {"complete": 1} and first["deferred_repositories"] == 2
+    assert first["remaining_ids"] == [2, 3]
+    assert not any(request.url.path.startswith("/repos/owner/repo-2") for request in calls)
+
+    fetcher, _ = mock_upstream(db)
+    try:
+        second = rescan_repositories(settings, db, resume_from="latest", fetcher=fetcher)
+    finally:
+        fetcher.close()
+    assert second["resumed_from"] == first["id"]
+    assert [item["id"] for item in second["repositories"]] == [2, 3]
+    assert second["status"] == "ok" and second["deferred_repositories"] == 0
+    assert plan_rescan(db, resume_from="latest")["candidates"] == []

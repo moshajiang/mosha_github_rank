@@ -146,3 +146,5 @@ Windows 受限沙箱中，pytest 临时目录需指定到工作区，例如 `--b
 报告列出过期项目、缺失字段、扫描范围、周/月榜阻塞原因和待刷新候选；输出文件须尚不存在。实时 JSON 可查询 [覆盖接口](http://127.0.0.1:8000/api/coverage)，口径与真实补采结果见 [数据覆盖说明](docs/COVERAGE.md)。
 
 用 projects rescan --dry-run 预览 Agent 资源补扫，再用 projects rescan --limit 10 执行一批。任务记录列出实际读取的文件、有效资源以及待续原因。 [补扫说明](docs/AGENT_RESOURCES.md#定向补扫)
+
+限流后可用 projects rescan --resume --dry-run 查看上次待续项目，再用 projects rescan --resume 继续。

@@ -46,6 +46,8 @@ GET /api/agent-resources 支持 kind=skill|plugin|mcp、q、limit、offset；gro
 .\.venv\Scripts\python.exe -m github_rank.cli projects rescan --dry-run --limit 10
 .\.venv\Scripts\python.exe -m github_rank.cli projects rescan --limit 10
 .\.venv\Scripts\python.exe -m github_rank.cli projects rescan owner/repository owner/second-repo
+.\.venv\Scripts\python.exe -m github_rank.cli projects rescan --resume --dry-run
+.\.venv\Scripts\python.exe -m github_rank.cli projects rescan --resume
 ~~~
 
 预览读取已有记录。自动选择范围是已跟踪、仍需扫描、且有 Agent 分类或资源证据的仓库，优先尚无完整扫描证据的多资源仓库。显式指定项目按所给顺序执行，接受库内曾用名称并核对 GitHub 数字 ID。单次可选 1 到 30 个项目。
@@ -53,5 +55,7 @@ GET /api/agent-resources 支持 kind=skill|plugin|mcp、q、limit、offset；gro
 补扫使用同一个 REST 客户端和同一把采集锁。已有采集任务占用锁时会报告忙碌。API 或资源主机限流、整批资源请求额度不足时，本批停止并标记待续条目。原有日常采集仍可使用公开页面。公开 API 的额度和重置条件见 [GitHub REST 限流文档](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
 
 命令输出与任务日志记录每个仓库的提交、目录状态、候选文件数、实际读取数、有效资源数和中断原因。覆盖体检汇总有完整证据且当时识别至少两项资源的仓库。之后的部分扫描会保留那次完整扫描的提交和时间，同时更新当次扫描状态。
+
+--resume 从最近一次结束的补扫恢复待续、被中断和受预算限制的项目。也可以传入先前报告的批次 ID，例如 --resume BATCH_ID。续扫按仓库 ID 查找当前名称，并跳过已经完成扫描或已排除的项目。若 --limit 只执行部分待续项目，其余项目仍保存在新批次中。
 
 目前保留最新资源记录及证据 commit；完整版本档案、安装遥测、跨格式语义去重和资源运行测试仍未实现。

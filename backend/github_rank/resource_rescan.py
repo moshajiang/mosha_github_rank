@@ -18,17 +18,47 @@ STOP_MESSAGES = {
     "cancelled": "Collection was cancelled",
     "interrupted": "Collection was interrupted",
 }
+BUDGET_STOPS = {"github_api_limit", "batch_resource_budget", "resource_rate_limit"}
 
 
-def plan_rescan(db, names=(), limit=10):
-    if not 1 <= limit <= MAX_RESCAN_REPOSITORIES:
+def load_resume_batch(view, source):
+    query = "SELECT id,report FROM job_runs WHERE kind='resource_rescan' AND finished_at IS NOT NULL"
+    if source == "latest":
+        rows = view.rows(query + " ORDER BY started_at DESC,rowid DESC LIMIT 1")
+    else:
+        rows = view.rows(query + " AND id=?", (source,))
+    if not rows:
+        raise ValueError("No matching finished resource rescan")
+
+    report = json.loads(rows[0]["report"])
+    pending = [
+        item["id"] for item in report["repositories"]
+        if item["status"] in ("deferred", "interrupted")
+        or (item["status"] in ("partial", "failed") and BUDGET_STOPS.intersection(item.get("reasons", [])))
+    ]
+    pending.extend(report.get("remaining_ids", []))
+    return rows[0]["id"], list(dict.fromkeys(pending))
+
+
+def plan_rescan(db, names=(), limit=10, *, resume_from=None):
+    if type(limit) is not int or not 1 <= limit <= MAX_RESCAN_REPOSITORIES:
         raise ValueError(f"Limit must be between 1 and {MAX_RESCAN_REPOSITORIES}")
+    if names and resume_from is not None:
+        raise ValueError("Choose explicit repositories or --resume")
+    resumed_from = None
     with db.read_view() as view:
         overrides = overrides_by_repo(view)
         counts = {row["repo_id"]: row["n"] for row in view.rows(
             "SELECT repo_id,count(*) AS n FROM resources GROUP BY repo_id"
         )}
-        if names:
+        if resume_from is not None:
+            resumed_from, pending_ids = load_resume_batch(view, resume_from)
+            rows = []
+            for repo_id in pending_ids:
+                rows.extend(view.rows(
+                    "SELECT id,full_name,data,updated_at FROM repositories WHERE id=?", (repo_id,)
+                ))
+        elif names:
             selected = {}
             for name in names:
                 row = resolve_repository(view, name)
@@ -49,7 +79,9 @@ def plan_rescan(db, names=(), limit=10):
         scan = repo.get("resource_scan_report") or {}
         known_resources = counts.get(row["id"], 0)
         status = repo.get("resource_scan", "not_scanned")
-        if not names and (status == "complete" or not (repo["agent_types"] or scan or known_resources)):
+        if not names and status == "complete":
+            continue
+        if not names and resumed_from is None and not (repo["agent_types"] or scan or known_resources):
             continue
         previous = last_complete_scan(repo)
         candidates.append({
@@ -58,17 +90,21 @@ def plan_rescan(db, names=(), limit=10):
             "last_scan_at": scan.get("observed_at") or row["updated_at"],
             "previous_complete": previous,
         })
-    if not names:
+    if not names and resumed_from is None:
         candidates.sort(key=lambda item: (
             bool(item["previous_complete"] and item["previous_complete"]["resource_count"] >= 2),
             item["known_resources"] < 2,
             item["last_scan_at"],
             item["id"],
         ))
-    return {"status": "planned", "candidate_total": len(candidates), "candidates": candidates[:limit]}
+    plan = {"status": "planned", "candidate_total": len(candidates), "candidates": candidates[:limit]}
+    if resumed_from is not None:
+        plan["resumed_from"] = resumed_from
+        plan["remaining_ids"] = [item["id"] for item in candidates[limit:]]
+    return plan
 
 
-def rescan_repositories(settings, db, names=(), limit=10, *, fetcher=None):
+def rescan_repositories(settings, db, names=(), limit=10, *, resume_from=None, fetcher=None):
     limits = settings.config().get("collection", {})
     owned = fetcher is None
     fetcher = fetcher or Fetcher(
@@ -76,7 +112,7 @@ def rescan_repositories(settings, db, names=(), limit=10, *, fetcher=None):
     )
     try:
         with db.lease("collection"):
-            plan = plan_rescan(db, names, limit)
+            plan = plan_rescan(db, names, limit, resume_from=resume_from)
             report = {
                 "id": uuid.uuid4().hex, "started_at": utcnow(), "status": "running",
                 "candidate_total": plan["candidate_total"],
@@ -84,6 +120,9 @@ def rescan_repositories(settings, db, names=(), limit=10, *, fetcher=None):
                 "errors": [], "stop_reason": None,
                 "resource_request_limit": fetcher.resource_request_limit,
             }
+            if "resumed_from" in plan:
+                report["resumed_from"] = plan["resumed_from"]
+                report["remaining_ids"] = plan["remaining_ids"]
             if not report["repositories"]:
                 return {**report, "status": "no_candidates"}
             db.execute("INSERT INTO job_runs VALUES(?,?,?,?,?,?)",
@@ -127,7 +166,7 @@ def rescan_repositories(settings, db, names=(), limit=10, *, fetcher=None):
                     if report["stop_reason"]:
                         break
                 statuses = {item["status"] for item in report["repositories"]}
-                report["status"] = "ok" if statuses == {"complete"} else "partial"
+                report["status"] = "ok" if statuses == {"complete"} and not report.get("remaining_ids") else "partial"
             except (CollectionCancelled, KeyboardInterrupt):
                 report.update(status="cancelled", stop_reason="cancelled")
                 raise
@@ -144,7 +183,7 @@ def rescan_repositories(settings, db, names=(), limit=10, *, fetcher=None):
                     item["status"] == "complete" and item["resource_count"] >= 2
                     for item in report["repositories"]
                 )
-                report["deferred_repositories"] = report["counts"].get("deferred", 0)
+                report["deferred_repositories"] = report["counts"].get("deferred", 0) + len(report.get("remaining_ids", []))
                 report["github_requests"] = fetcher.github_requests - first_api_request
                 report["resource_requests"] = fetcher.resource_requests - first_resource_request
                 report["finished_at"] = utcnow()
