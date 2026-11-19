@@ -251,6 +251,13 @@ type Status = {
   summary_model_configured: boolean;
   summary_attempts_today: number;
   summary_daily_limit: number;
+  project_summaries?: {
+    total: number;
+    ready: number;
+    pending: number;
+    missing_source: number;
+    remaining_today: number;
+  };
   jobs: {
     id: string;
     kind: string;
@@ -319,6 +326,7 @@ const number = (n: number) =>
   n >= 1000
     ? (n / 1000).toFixed(n >= 10000 ? 1 : 2).replace(/\.?0+$/, "") + "k"
     : String(n);
+const resourceLabels: Record<string, string> = { skill: "Skill", plugin: "插件", mcp: "MCP" };
 const colors: Record<string, string> = {
   Python: "#4b83b6",
   TypeScript: "#3178c6",
@@ -376,7 +384,7 @@ function App() {
     const timer = setInterval(() => setRuntimeRevision((r) => r + 1), 15000);
     return () => clearInterval(timer);
   }, [sourcesOpen]);
-  const [sidebar, setSidebar] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [localLibrary, setLocalLibrary] =
     useState<LocalLibrary>(readLocalLibrary);
@@ -505,7 +513,7 @@ function App() {
   }>(
     "/api/agent-resources?" +
       new URLSearchParams({
-        q: query,
+        q: isAgents ? query : "",
         kind: ["skill", "plugin", "mcp"].includes(agentType) ? agentType : "",
         offset: String((resourcePage - 1) * 100),
       }),
@@ -533,7 +541,7 @@ function App() {
   function navigate(url: string) {
     history.pushState({}, "", url);
     setRoute(location.pathname + location.search);
-    setSidebar(false);
+    setNavigationOpen(false);
     globalThis.scrollTo({ top: 0 });
   }
   function filter(key: string, value: string) {
@@ -674,11 +682,11 @@ function App() {
         className="repo-title"
         onClick={() => navigate("/projects/" + repo.full_name)}
       >
-        <span>{repo.full_name.split("/")[0]} /</span>
+        <span>{repo.full_name.split("/")[0]}</span>
         <strong>{repo.full_name.split("/")[1]}</strong>
-        <ArrowUpRight size={17} />
+        <ChevronRight size={18} aria-hidden="true" />
       </button>
-      <p className="repo-description">{repo.summary_zh || repo.description}</p>
+      <p className="repo-description">{repo.summary_zh || repo.description || repo.summary}</p>
       <SummaryEvidence meta={repo.summary_meta} />
       <div className="repo-tags">
         {repo.classification?.method === "manual" && <span>人工修订</span>}
@@ -706,7 +714,7 @@ function App() {
           {number(repo.forks)}
         </span>
         {repo.delta_stars != null ? (
-          <span className="growth">+{number(repo.delta_stars)}</span>
+          <span className="growth">{repo.delta_stars >= 0 ? "+" : ""}{number(repo.delta_stars)}</span>
         ) : (
           <span className="observing">观察中</span>
         )}
@@ -797,11 +805,7 @@ function App() {
           <Layers3 size={20} />
         </span>
         <span className="eyebrow">
-          {r.kind === "skill"
-            ? "AGENT SKILL"
-            : r.kind === "mcp"
-              ? "MCP SERVER"
-              : "PLUGIN"}
+          {resourceLabels[r.kind] || r.kind}
         </span>
         {saveButton("resource", r.id, r)}
       </div>
@@ -932,12 +936,19 @@ function App() {
       </section>
     );
   }
-  const displayedRepos = isHome
-    ? (formal.length ? formal : observing).slice(0, 6)
-    : formal;
-  const successSources = (sources.data?.items || []).filter(
-    (s) => s.status === "ok" && s.enabled !== false,
-  ).length;
+  const displayedRepos = (formal.length ? formal : observing).slice(0, 3);
+  const summaryProgress = status.data?.project_summaries;
+  const pageTitle = isNews
+    ? "AI 前沿资讯"
+    : isAgents
+      ? "AI Agent 专栏"
+      : isSaved
+        ? "我的收藏"
+        : isArchive
+          ? "历史榜单"
+          : kind === "potential"
+            ? "潜力项目"
+            : "热门榜单";
   const nav = [
     { name: "发现", path: "/", icon: Compass, active: isHome },
     {
@@ -952,385 +963,317 @@ function App() {
       icon: TrendingUp,
       active: path === "/rankings" && kind === "potential",
     },
-    { name: "AI Agent 专栏", path: "/agents", icon: Bot, active: isAgents },
-    { name: "AI 前沿资讯", path: "/news", icon: Newspaper, active: isNews },
+    {
+      name: "AI Agent",
+      path: "/agents",
+      icon: Bot,
+      active: isAgents || isResourceDetail,
+    },
+    {
+      name: "AI 资讯",
+      path: "/news",
+      icon: Newspaper,
+      active: isNews || isNewsDetail,
+    },
+    { name: "收藏", path: "/saved", icon: Bookmark, active: isSaved },
+    { name: "历史榜单", path: "/archive", icon: History, active: isArchive },
+  ];
+  const directoryIndex = [
+    {
+      name: "GitHub 项目",
+      path: "/rankings",
+      total: status.data?.counts.repositories,
+      icon: Github,
+    },
+    {
+      name: "Agent 资源",
+      path: "/agents?view=resources",
+      total: status.data?.counts.resources,
+      icon: Layers3,
+    },
+    {
+      name: "AI 前沿资讯",
+      path: "/news",
+      total: status.data?.counts.news,
+      icon: Newspaper,
+    },
   ];
 
   return (
     <div className="app-shell">
-      {sidebar && (
-        <div className="sidebar-backdrop" onClick={() => setSidebar(false)} />
-      )}
-      <aside className={"sidebar " + (sidebar ? "open" : "")}>
-        <button className="brand" onClick={() => navigate("/")}>
-          <span className="brand-mark">
-            <i />
-            <i />
-            <i />
-            <i />
-          </span>
-          <span>
-            GitHub<span className="brand-light">Rank</span>
-            <small>发现开源的下一站</small>
-          </span>
-        </button>
-        <div className="nav-label">探索 / EXPLORE</div>
-        <nav>
-          {nav.map((n) => (
-            <button
-              key={n.name}
-              className={n.active ? "active" : ""}
-              onClick={() => navigate(n.path)}
-            >
-              <n.icon size={19} />
-              <span>{n.name}</span>
-              {n.active && <ChevronRight size={14} />}
-              {n.name === "AI 前沿资讯" && !n.active && (
-                <span className="new-tag">NEW</span>
-              )}
-            </button>
-          ))}
-        </nav>
-        <div className="nav-divider" />
-        <div className="nav-label">我的空间</div>
-        <nav>
+      <header className="site-header">
+        <div className="site-header-inner">
           <button
-            className={isSaved ? "active" : ""}
-            onClick={() => navigate("/saved")}
+            className="brand"
+            onClick={() => navigate("/")}
+            aria-label="GitHub Rank 首页"
           >
-            <Bookmark size={18} />
-            <span>我的收藏</span>
-            <small>{saved.length}</small>
-          </button>
-          <button
-            className={isArchive ? "active" : ""}
-            onClick={() => navigate("/archive")}
-          >
-            <History size={18} />
-            <span>历史榜单</span>
-          </button>
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="source-note">
-            <span className="status-dot" />
-            关注真实数据<small>每个趋势，都有迹可循。</small>
-          </div>
-          <button onClick={() => setSourcesOpen(true)}>
-            <Radio size={16} />
-            数据源与同步状态
-            <ArrowUpRight size={14} />
-          </button>
-          <div className="sidebar-version">
-            GitHub Rank <span>v0.1 · LOCAL</span>
-          </div>
-        </div>
-      </aside>
-      <main className="main">
-        <header className="topbar">
-          <button
-            className="icon-btn mobile-menu"
-            aria-label="打开导航"
-            onClick={() => setSidebar(true)}
-          >
-            <Menu size={22} />
-          </button>
-          <div className="breadcrumbs">
-            探索 <ChevronRight size={13} />
-            <span>
-              {isNews
-                ? "AI 前沿资讯"
-                : isAgents
-                  ? "AI Agent 专栏"
-                  : isSaved
-                    ? "我的收藏"
-                    : isArchive
-                      ? "历史榜单"
-                      : isDetail
-                        ? isNewsDetail
-                          ? "资讯详情"
-                          : isResourceDetail
-                            ? "资源详情"
-                            : "项目详情"
-                        : isHome
-                          ? "发现"
-                          : kind === "potential"
-                            ? "潜力项目"
-                            : "热门榜单"}
+            <span className="brand-mark">
+              <Layers3 size={20} aria-hidden="true" />
             </span>
-          </div>
-          <div className="topbar-right">
-            <span className="local-tag">
-              <span className="status-dot" /> 本地工作台
-            </span>
+            <span>GitHub Rank</span>
+          </button>
+          <nav
+            id="site-navigation"
+            className={"site-nav" + (navigationOpen ? " open" : "")}
+            aria-label="主导航"
+          >
+            {nav.map((item) => (
+              <button
+                key={item.path}
+                className={item.active ? "active" : ""}
+                aria-current={item.active ? "page" : undefined}
+                onClick={() => navigate(item.path)}
+              >
+                <item.icon size={15} aria-hidden="true" />
+                <span>{item.name}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="header-actions">
             <button
               className="icon-btn"
               title="重新读取本地数据"
               aria-label="重新读取本地数据"
               onClick={() => setRevision((n) => n + 1)}
             >
-              <RefreshCw size={16} />
+              <RefreshCw size={17} />
             </button>
             <button
-              className="profile"
+              className="source-trigger"
               onClick={() => setSourcesOpen(true)}
-              aria-label="数据状态"
+              aria-label="数据源与同步状态"
             >
-              G
+              <Radio size={17} />
+              <span>数据状态</span>
+            </button>
+            <button
+              className="icon-btn mobile-menu"
+              aria-controls="site-navigation"
+              aria-expanded={navigationOpen}
+              aria-label={navigationOpen ? "收起导航" : "打开导航"}
+              onClick={() => setNavigationOpen((open) => !open)}
+            >
+              {navigationOpen ? <X size={21} /> : <Menu size={21} />}
             </button>
           </div>
-        </header>
+        </div>
+      </header>
+      <main className="main">
         <div className="content">
-          <section className="page-heading">
-            <div>
-              <div className="heading-kicker">
-                <span className="green-line" />
-                {isNews
-                  ? "THE AI FRONTIER"
-                  : isAgents
-                    ? "BUILD WITH AGENTS"
-                    : isSaved
-                      ? "YOUR COLLECTION"
-                      : isArchive
-                        ? "TREND ARCHIVE"
-                        : "YOUR OPEN SOURCE RADAR"}
-              </div>
-              <h1>
-                {isNews ? (
-                  "AI 前沿资讯"
-                ) : isAgents ? (
-                  "AI Agent，能力的下一步。"
-                ) : isSaved ? (
-                  "留住每一次发现。"
-                ) : isArchive ? (
-                  "回看趋势的每一步。"
-                ) : isDetail ? (
-                  "从发现，到深入了解。"
-                ) : isHome ? (
-                  <>
-                    好项目，值得更早发现<span>。</span>
-                  </>
-                ) : kind === "potential" ? (
-                  "发现正在积蓄势能的项目。"
-                ) : (
-                  "看看开源世界正在发生什么。"
-                )}
-              </h1>
-              <p>
-                {isNews
-                  ? "聚合一手发布、研究进展与开源动态，快速了解 AI 正在发生什么。"
-                  : isAgents
-                    ? "框架、编程助手、MCP、插件与 Skills，在这里连接你的下一种能力。"
-                    : isSaved
-                      ? "收藏保存在当前浏览器，随时回到值得继续探索的项目与资讯。"
-                      : isArchive
-                        ? "每次发布保留独立快照，统计周期和算法版本都可以追溯。"
-                        : isDetail
-                          ? "原始介绍、实测指标与资源链接，帮助你判断是否值得继续探索。"
-                          : "追踪近期热门，寻找早期潜力，让每一次探索都有方向。"}
-              </p>
-            </div>
-            <button
-              className="outline-button heading-action"
-              onClick={() => setSourcesOpen(true)}
+          {isHome ? (
+            <section
+              className="directory-hero"
+              aria-labelledby="directory-title"
             >
-              <Radio size={15} />
-              数据来源
-              <ArrowUpRight size={14} />
-            </button>
-          </section>
+              <div className="directory-intro">
+                <h1 id="directory-title">发现开源项目</h1>
+                <p>搜索 GitHub 仓库，按近期热度和增长趋势挑选项目。</p>
+                <div
+                  className="directory-search"
+                  role="search"
+                  aria-label="项目搜索"
+                >
+                  <Search size={21} aria-hidden="true" />
+                  <input
+                    type="search"
+                    aria-label="搜索 GitHub 项目"
+                    placeholder="搜索仓库名、原始描述或主题"
+                    value={query}
+                    onChange={(e) => filter("q", e.target.value)}
+                  />
+                  {query && (
+                    <button
+                      className="icon-btn"
+                      aria-label="清除搜索"
+                      onClick={() => filter("q", "")}
+                    >
+                      <X size={17} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="directory-index" aria-label="收录目录">
+                {directoryIndex.map((item) => (
+                  <button key={item.path} onClick={() => navigate(item.path)}>
+                    <item.icon size={18} aria-hidden="true" />
+                    <span>{item.name}</span>
+                    <strong>
+                      {item.total == null ? "—" : number(item.total)}
+                    </strong>
+                    <ChevronRight size={14} aria-hidden="true" />
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : !isDetail ? (
+            <header className="page-heading">
+              <h1>{pageTitle}</h1>
+              {isNews && <p>浏览官方发布、研究进展和开源动态。</p>}
+              {isAgents && (
+                <p>查找 Agent 框架、编程助手、MCP、插件和 Skills。</p>
+              )}
+              {isSaved && <p>收藏和阅读记录保存在当前浏览器。</p>}
+              {isArchive && <p>查看已发布榜单的统计周期和算法版本。</p>}
+            </header>
+          ) : null}
           {status.error && (
             <div className="error-banner">
               <AlertCircle size={18} />
-              后端暂不可用：{status.error}。请确认 API 服务已启动。
+              无法读取本地数据。{status.error}
               <button onClick={() => setRevision((n) => n + 1)}>重试</button>
             </div>
           )}
 
           {isHome && (
             <>
-              <section className="stats-grid">
-                {[
-                  {
-                    label: "正在追踪",
-                    value: status.data?.counts.repositories || 0,
-                    suffix: "个项目",
-                    icon: Github,
-                    note: "持续积累每日快照",
-                    color: "green",
-                  },
-                  {
-                    label: "本周入榜",
-                    value: rankings.data?.total || 0,
-                    suffix: "个项目",
-                    icon: TrendingUp,
-                    note: "完整 7 天观测后入榜",
-                    color: "orange",
-                  },
-                  {
-                    label: "Agent 资源",
-                    value: status.data?.counts.resources || 0,
-                    suffix: "项能力",
-                    icon: Bot,
-                    note: "Skills 与插件的原始路径",
-                    color: "violet",
-                  },
-                  {
-                    label: "前沿资讯",
-                    value: status.data?.counts.news || 0,
-                    suffix: "条记录",
-                    icon: Newspaper,
-                    note: `${successSources} 个来源同步成功`,
-                    color: "blue",
-                  },
-                ].map((s) => (
-                  <div className="stat-card" key={s.label}>
-                    <div className="stat-label">
-                      {s.label}
-                      <span className={"stat-icon " + s.color}>
-                        <s.icon size={18} />
-                      </span>
-                    </div>
-                    <div className="stat-value">
-                      {s.value}
-                      <small>{s.suffix}</small>
-                    </div>
-                    <div className="stat-note">
-                      <span className="tiny-dot" />
-                      {s.note}
-                    </div>
+              <section
+                className="directory-projects section-frame"
+                aria-labelledby="directory-projects-title"
+              >
+                <div className="section-heading">
+                  <div>
+                    <h2 id="directory-projects-title">
+                      {query
+                        ? "搜索结果"
+                        : formal.length
+                          ? "本周热门项目"
+                          : "正在观察的项目"}
+                    </h2>
+                    <p>
+                      {formal.length
+                        ? "最近 7 天按 Star 净增长排序。"
+                        : "当前按总 Star 展示，积累完整观测后计入增长榜。"}
+                    </p>
                   </div>
-                ))}
-              </section>
-              <div className="dashboard-grid">
-                <section>
-                  <div className="section-heading">
-                    <div>
-                      <h2>
-                        <Flame size={20} className="orange-text" />
-                        {formal.length ? "本周热门项目" : "从这里开始探索"}
-                      </h2>
-                      <p>
-                        {formal.length
-                          ? "最近 7 天净增长，发现持续获得关注的项目。"
-                          : "真实项目已开始观察，完整历史积累后发布增长榜。"}
-                      </p>
-                    </div>
-                    <button
-                      className="text-button"
-                      onClick={() => navigate("/rankings")}
-                    >
-                      查看全部
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                  <div className="category-chips">
-                    <button
-                      className={!category ? "active" : ""}
-                      onClick={() => filter("category", "")}
-                    >
-                      全部领域
-                    </button>
-                    {Object.entries(cfg?.categories || {})
-                      .filter(([k]) =>
-                        ["ai", "devtools", "frontend", "productivity"].includes(
-                          k,
-                        ),
-                      )
-                      .map(([k, v]) => (
-                        <button
-                          className={category === k ? "active" : ""}
-                          key={k}
-                          onClick={() => filter("category", k)}
-                        >
-                          {v}
-                        </button>
-                      ))}
-                  </div>
-                  <Loading state={rankings} />
-                  <div className="repo-grid">
-                    {displayedRepos.map(repoCard)}
-                  </div>
-                  {!rankings.loading && !displayedRepos.length && (
+                  <button
+                    className="text-button"
+                    onClick={() => navigate("/rankings?" + rankedParams)}
+                  >
+                    {query ? "查看全部结果" : "完整榜单"}{" "}
+                    <ArrowRight size={15} />
+                  </button>
+                </div>
+                <div className="category-chips" aria-label="项目分类">
+                  <button
+                    className={!category ? "active" : ""}
+                    aria-pressed={!category}
+                    onClick={() => filter("category", "")}
+                  >
+                    全部领域
+                  </button>
+                  {Object.entries(cfg?.categories || {})
+                    .filter(([key]) =>
+                      ["ai", "devtools", "frontend", "productivity"].includes(
+                        key,
+                      ),
+                    )
+                    .map(([key, label]) => (
+                      <button
+                        className={category === key ? "active" : ""}
+                        aria-pressed={category === key}
+                        key={key}
+                        onClick={() => filter("category", key)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                </div>
+                <Loading state={rankings} />
+                <div className="repo-grid">{displayedRepos.map(repoCard)}</div>
+                {!rankings.loading &&
+                  !rankings.error &&
+                  !displayedRepos.length && (
                     <Empty
-                      title="发现从第一条真实数据开始"
-                      description="运行采集任务后，项目会出现在这里。增长榜会等待完整历史，不使用演示数据。"
+                      title={
+                        query || category
+                          ? "没有匹配的项目"
+                          : "项目目录暂无记录"
+                      }
+                      description={
+                        query || category
+                          ? "试试其他关键词，或切换项目分类。"
+                          : "运行更新任务后，已采集的项目会出现在这里。"
+                      }
                     />
                   )}
-                  <div className="observing-foot">
-                    <Clock3 size={14} />
-                    仓库快照 {time(status.data?.last_snapshot)} · 当前总 Star
-                    仅供参考
-                  </div>
-                  <div className="agent-callout">
-                    <div className="agent-callout-icon">
-                      <Bot size={28} />
-                    </div>
-                    <div>
-                      <span>THE AGENT ECOSYSTEM</span>
-                      <h3>把下一种能力，加入你的工具箱。</h3>
-                      <p>探索 Agent、MCP 与 Skills，找到适合你的构建方式。</p>
-                    </div>
+              </section>
+              <div className="directory-columns">
+                <section
+                  className="directory-panel"
+                  aria-labelledby="directory-agents-title"
+                >
+                  <div className="section-heading">
+                    <h2 id="directory-agents-title">
+                      <Layers3 size={20} /> Agent 资源
+                    </h2>
                     <button
-                      onClick={() => navigate("/agents")}
-                      aria-label="探索 AI Agent 专栏"
+                      className="text-button"
+                      onClick={() => navigate("/agents?view=resources")}
                     >
-                      <ArrowUpRight size={22} />
+                      浏览资源 <ArrowRight size={15} />
                     </button>
                   </div>
+                  <Loading state={resources} />
+                  {resources.data?.items.slice(0, 3).map((resource) => (
+                    <button
+                      className="directory-resource"
+                      key={resource.id}
+                      onClick={() => navigate("/resources/" + resource.id)}
+                    >
+                      <span className="directory-resource-text">
+                        <strong>{resource.name}</strong>
+                        <small>{resource.repo_name}</small>
+                      </span>
+                      <span className="directory-resource-kind">
+                        {resourceLabels[resource.kind] || resource.kind}
+                      </span>
+                      <ChevronRight size={15} aria-hidden="true" />
+                    </button>
+                  ))}
+                  {!resources.loading &&
+                    !resources.error &&
+                    !resources.data?.items.length && (
+                      <Empty
+                        title="暂无 Agent 资源"
+                        description="采集到资源后会在这里显示。"
+                        compact
+                      />
+                    )}
                 </section>
-                <aside className="news-panel">
+                <section
+                  className="directory-panel"
+                  aria-labelledby="directory-news-title"
+                >
                   <div className="section-heading">
-                    <h2>
-                      <Radio size={18} className="green-text" />
-                      AI 前沿速览
+                    <h2 id="directory-news-title">
+                      <Newspaper size={20} /> AI 前沿资讯
                     </h2>
-                    <span className="live-pill">
-                      {runtime.data?.scheduler.online
-                        ? "定时采集中"
-                        : "本地资讯"}
-                    </span>
-                  </div>
-                  <div className="news-panel-subtitle">
-                    近 7 天 · 官方发布与研究进展
+                    <button
+                      className="text-button"
+                      onClick={() => navigate("/news")}
+                    >
+                      全部资讯 <ArrowRight size={15} />
+                    </button>
                   </div>
                   <Loading state={news} />
-                  {news.data?.items.slice(0, 5).map((n) => newsCard(n, true))}
-                  {!news.loading && !news.data?.items.length && (
+                  {news.data?.items
+                    .slice(0, 3)
+                    .map((item) => newsCard(item, true))}
+                  {!news.loading && !news.error && !news.data?.items.length && (
                     <Empty
-                      title="该周期暂无已知时间的资讯"
-                      description="可前往资讯页查看时间未知的来源内容。"
+                      title="近 7 天暂无已知时间的资讯"
+                      description="资讯页也可以查看发布时间未知的条目。"
                       compact
                     />
                   )}
-                  <button
-                    className="news-panel-more"
-                    onClick={() => navigate("/news")}
-                  >
-                    浏览全部资讯
-                    <ArrowRight size={15} />
-                  </button>
-                  <div className="source-mini">
-                    <div className="source-mini-icons">
-                      <span>A</span>
-                      <span>G</span>
-                      <span>H</span>
-                      <span>ar</span>
-                    </div>
-                    <span>
-                      一手来源，保留原文。
-                      <button onClick={() => setSourcesOpen(true)}>
-                        查看同步状态
-                        <ArrowUpRight size={11} />
-                      </button>
-                    </span>
-                  </div>
-                </aside>
+                </section>
               </div>
             </>
           )}
 
           {!isHome && !isDetail && !isSaved && !isArchive && (
-            <>
+            <section className="section-frame filter-frame" aria-label="浏览筛选">
               <div className="filter-bar">
                 <div className="segmented">
                   {isNews ? (
@@ -1562,11 +1505,11 @@ function App() {
                   )}
                 </div>
               )}
-            </>
+            </section>
           )}
 
           {(path === "/rankings" || (isAgents && !resourcesView)) && (
-            <>
+            <section className="section-frame results-frame" aria-label="项目榜单">
               <div className="list-header">
                 <span>
                   {rankings.data?.total || 0} 个正式入榜项目 ·{" "}
@@ -1626,10 +1569,10 @@ function App() {
                   description="试试其他分类或关键词，也可以先运行一次采集任务。"
                 />
               )}
-            </>
+            </section>
           )}
           {resourcesView && (
-            <>
+            <section className="section-frame results-frame" aria-label="Agent 资源列表">
               <div className="info-banner">
                 <Layers3 size={19} />
                 <div>
@@ -1679,10 +1622,10 @@ function App() {
                   description="资源扫描需要访问仓库目录和元数据；可在数据状态中检查扫描情况。"
                 />
               )}
-            </>
+            </section>
           )}
           {isNews && (
-            <>
+            <section className="section-frame results-frame" aria-label="AI 资讯列表">
               {readingTabs}
               <div className="list-header">
                 <span>{news.data?.total || 0} 条资讯 · 按原始发布时间筛选</span>
@@ -1729,7 +1672,7 @@ function App() {
                   </div>
                 </>
               )}
-            </>
+            </section>
           )}
           {isSaved && (
             <>
@@ -1949,11 +1892,10 @@ function App() {
             />
           )}
           <footer className="page-footer">
-            <span>
-              <span className="status-dot" />
-              数据有来源，趋势可追溯。
-            </span>
-            <span>GitHub Rank · 为好奇心而构建</span>
+            <span>GitHub Rank</span>
+            {status.data?.last_snapshot && (
+              <span>最近仓库快照 {time(status.data.last_snapshot)}</span>
+            )}
           </footer>
         </div>
       </main>
@@ -2084,10 +2026,36 @@ function App() {
               {status.data?.github_token_configured
                 ? "已配置服务端 GitHub Token。"
                 : "使用公开接口，小批量采集受未认证额度限制。"}
-              {status.data?.summary_model_configured
-                ? `已配置${status.data.summary_mode === "inkstone" ? "书生·端砚" : " Ollama"} 摘要，今日调用 ${status.data.summary_attempts_today}/${status.data.summary_daily_limit} 次。`
-                : "当前摘要方式：原文与中文模板，未配置模型。"}
             </p>
+            {summaryProgress && (
+              <section className="summary-progress" aria-labelledby="summary-progress-title">
+                <div className="section-heading">
+                  <h3 id="summary-progress-title">项目中文简介</h3>
+                  <strong>{summaryProgress.ready} / {summaryProgress.total} 个项目</strong>
+                </div>
+                {summaryProgress.total > 0 && (
+                  <progress
+                    aria-label="项目中文简介覆盖率"
+                    value={summaryProgress.ready}
+                    max={summaryProgress.total}
+                  />
+                )}
+                <div className="summary-progress-meta">
+                  <span>待生成 {summaryProgress.pending}</span>
+                  {summaryProgress.missing_source > 0 && (
+                    <span>资料不足 {summaryProgress.missing_source}</span>
+                  )}
+                  {status.data?.summary_model_configured ? (
+                    <span>
+                      {status.data.summary_mode === "inkstone" ? "书生·端砚" : "Ollama"}
+                      {"　"}今日剩余 {summaryProgress.remaining_today} 次
+                    </span>
+                  ) : (
+                    <span>配置模型后可生成简介</span>
+                  )}
+                </div>
+              </section>
+            )}
             <div className="sources-list">
               {sources.data?.items.map((s) => (
                 <div key={s.id}>
@@ -2357,7 +2325,7 @@ function NewsDetail({
           <span className="eyebrow">
             {cfg?.topics[item.topic] || item.topic} · {item.source_name}
           </span>
-          <h2>{item.title_zh || item.title}</h2>
+          <h1>{item.title_zh || item.title}</h1>
           {item.title_zh && item.title_zh !== item.title && <p>{item.title}</p>}
           <div className="detail-tags">
             <span>{newsDate(item.published_at, item.published_precision)}</span>
@@ -2666,13 +2634,9 @@ function ResourceDetail({
       <div className="detail-hero">
         <div>
           <span className="eyebrow">
-            {item.kind === "skill"
-              ? "AGENT SKILL"
-              : item.kind === "mcp"
-                ? "MCP SERVER"
-                : "PLUGIN"}
+            {resourceLabels[item.kind] || item.kind}
           </span>
-          <h2>{item.name}</h2>
+          <h1>{item.name}</h1>
           <p>{item.summary_zh || item.description}</p>
           <div className="detail-tags">
             <span>{item.ecosystem || "待核对格式"}</span>
@@ -2886,7 +2850,7 @@ function ProjectDetail({
       <div className="detail-hero">
         <div>
           <span className="eyebrow">{cfg?.categories[repo.category]}</span>
-          <h2>{repo.full_name}</h2>
+          <h1>{repo.full_name}</h1>
           <p>{repo.description}</p>
           <div className="detail-tags">
             {repo.agent_types.map((t) => (

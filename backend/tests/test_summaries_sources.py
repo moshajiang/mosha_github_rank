@@ -7,9 +7,10 @@ from conftest import add_repo
 from github_rank.api import create_app
 from github_rank.db import Database, SCHEMA, dumps
 from github_rank.jobs import collect, register_sources
+from github_rank.repositories import edit_repository
 from github_rank.settings import Settings
 from github_rank.sources import set_enabled, source_states
-from github_rank.summaries import InkStoneProvider, OllamaProvider, SummaryError, summarize, annotate_summaries
+from github_rank.summaries import InkStoneProvider, OllamaProvider, SummaryError, summarize, annotate_summaries, summary_queue
 from github_rank.transport import Fetcher
 from fastapi.testclient import TestClient
 
@@ -113,7 +114,7 @@ def test_inkstone_projects_are_validated_cached_and_displayed(settings, monkeypa
     settings = replace(settings, summary_provider="inkstone", summary_model="intern-s2",
                        inkstone_api_key="example-token", summary_url="https://example.net")
     db = Database(settings.db_path)
-    repo = add_repo(db)
+    repo = add_repo(db, readme_excerpt="Build an agent workflow.  Keep the source wording unchanged.")
     calls = []
 
     def handler(request):
@@ -128,7 +129,11 @@ def test_inkstone_projects_are_validated_cached_and_displayed(settings, monkeypa
         assert body["stream"] is False and "tools" not in body
         prompt = json.loads(body["messages"][1]["content"])
         assert prompt["kind"] == "project" and "example-token" not in str(prompt)
-        output = {"summary": SUMMARY, "evidence": [{"source_id": "description", "quote": repo["description"]}]}
+        assert prompt["excerpts"] == [
+            {"id": 1, "source_id": "description", "quote": repo["description"]},
+            {"id": 2, "source_id": "readme", "quote": repo["readme_excerpt"]},
+        ]
+        output = {"summary": SUMMARY, "evidence_ids": [2]}
         return httpx.Response(200, json={
             "choices": [{"finish_reason": "stop", "message": {"content": dumps(output)}}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 80},
@@ -148,7 +153,56 @@ def test_inkstone_projects_are_validated_cached_and_displayed(settings, monkeypa
     assert "example-token" not in dumps(status)
     detail = client.get("/api/projects/owner/repo-1").json()
     assert detail["summary_zh"] == SUMMARY and detail["description"] == repo["description"]
-    assert detail["summary_meta"]["evidence"][0]["url"] == repo["url"]
+    assert detail["summary_meta"]["evidence"] == [
+        {"source_id": "readme", "quote": repo["readme_excerpt"], "url": repo["url"] + "#readme"},
+    ]
+
+
+def test_inkstone_rejects_unknown_excerpt_ids(settings, db):
+    add_repo(db)
+    settings = replace(settings, summary_provider="inkstone", summary_model="intern-s2", inkstone_api_key="example-token")
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{"finish_reason": "stop", "message": {"content": dumps({"summary": SUMMARY, "evidence_ids": [999]})}}],
+        })
+
+    provider = InkStoneProvider("example-token", settings.summary_model, httpx.MockTransport(handler))
+    try:
+        report = summarize(settings, db, provider=provider)
+    finally:
+        provider.close()
+    assert report["failed"] == 1 and report["errors"][0]["error"] == "Summary referenced an unknown excerpt"
+    assert db.rows("SELECT * FROM summaries") == []
+
+
+def test_project_queue_prioritizes_featured_projects_and_excludes_hidden_ones(settings, db):
+    add_repo(db, 1, stars=100, agent_types=[])
+    add_repo(db, 2, stars=200, agent_types=[])
+    add_repo(db, 3, stars=300, agent_types=[])
+    add_repo(db, 4, stars=400, agent_types=[])
+    add_repo(db, 5, stars=30, agent_types=["skill"])
+    hidden = add_repo(db, 6, stars=1000)
+    edit_repository(db, hidden["full_name"], excluded=True, reason="Exclude this project")
+    queue, cached, skipped = summary_queue(db, ["project"], "model")
+    assert [row[1] for row in queue] == ["4", "3", "2", "5", "1"]
+    assert (cached, skipped) == (0, 0)
+
+
+def test_project_progress_counts_current_visible_summaries_across_models(settings):
+    db = Database(settings.db_path)
+    original = add_repo(db)
+    summarize(replace(settings, summary_model="older-model"), db, "project", provider=FakeProvider())
+    add_repo(db, 2)
+    add_repo(db, 3, description="")
+    hidden = add_repo(db, 4)
+    edit_repository(db, hidden["full_name"], excluded=True, reason="Exclude this project")
+    client = TestClient(create_app(replace(settings, summary_model="new-model", summary_daily_limit=2)))
+    stats = client.get("/api/data-status").json()["project_summaries"]
+    assert stats == {"total": 3, "ready": 1, "pending": 1, "missing_source": 1, "attempts_today": 1, "remaining_today": 1}
+    db.execute("UPDATE repositories SET data=? WHERE id=1", (dumps({**original, "description": "The source text has changed"}),))
+    updated = client.get("/api/data-status").json()["project_summaries"]
+    assert updated["ready"] == 0 and updated["pending"] == 2
 
 
 def test_inkstone_missing_key_or_http_error_never_repeats_requests(settings, db):

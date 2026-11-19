@@ -10,10 +10,10 @@ from fastapi.responses import FileResponse, Response
 from .classify import CATEGORIES, AGENT_TYPES, TOPICS
 from .db import Database, utcnow
 from .jobs import register_sources
-from .ranking import compute_rankings
+from .ranking import compute_rankings, split_rankings
 from .settings import Settings, ROOT
 from .sources import source_states, source_events
-from .summaries import annotate_summaries
+from .summaries import annotate_summaries, project_summary_progress
 from .identity import workspace_id
 from .repositories import repository_items, resolve_repository, overrides_by_repo, apply_override, canonical_resource
 from .scheduler import scheduler_status
@@ -75,12 +75,15 @@ def create_app(settings=None):
 
     @app.get("/api/data-status")
     def data_status():
-        counts = {}
-        for table in ("repositories", "resources", "news", "snapshots", "summaries"):
-            counts[table] = db.rows(f"SELECT count(*) AS n FROM {table}")[0]["n"]
-        last_snapshot = db.rows("SELECT max(observed_at) AS t FROM snapshots")[0]["t"]
-        last_news = db.rows("SELECT max(fetched_at) AS t FROM news")[0]["t"]
-        jobs = db.rows("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 8")
+        with db.read_view() as view:
+            counts = {
+                table: view.rows(f"SELECT count(*) AS n FROM {table}")[0]["n"]
+                for table in ("repositories", "resources", "news", "snapshots", "summaries")
+            }
+            last_snapshot = view.rows("SELECT max(observed_at) AS t FROM snapshots")[0]["t"]
+            last_news = view.rows("SELECT max(fetched_at) AS t FROM news")[0]["t"]
+            jobs = view.rows("SELECT * FROM job_runs ORDER BY started_at DESC LIMIT 8")
+            progress = project_summary_progress(view, settings.summary_daily_limit)
         for job in jobs:
             job["report"] = json.loads(job["report"])
         summary_configured = settings.summary_configuration_error is None
@@ -89,7 +92,7 @@ def create_app(settings=None):
                 "summary_mode": settings.summary_provider if summary_configured else "template", "jobs": jobs,
                 "summary_model_configured": summary_configured,
                 "summary_daily_limit": settings.summary_daily_limit,
-                "summary_attempts_today": db.rows("SELECT count(*) AS n FROM summary_attempts WHERE day=?", (datetime.now(timezone(timedelta(hours=8))).date().isoformat(),))[0]["n"],
+                "summary_attempts_today": progress["attempts_today"], "project_summaries": progress,
                 "note": "已跟踪候选池排行；不代表全部 GitHub。无完整历史时显示观察中。"}
 
     def repositories(q="", category="", language="", agent_type="", min_stars=0, max_stars=None):
@@ -159,11 +162,9 @@ def create_app(settings=None):
                  and q.lower() in (r["full_name"] + " " + r["description"]).lower()
                  and (not language or language == "__unknown__" and not r.get("language") or r.get("language") == language)
                  and r["stars"] >= min_stars and (max_stars is None or r["stars"] <= max_stars)]
-        formal = [r for r in items if r[f"{kind}_eligible"]]
-        formal.sort(key=lambda r: (-(r["potential_score"] if kind == "potential" else r["delta_stars"]), -(r["delta_forks"] or 0), r["id"]))
+        formal, observed = split_rankings(items, kind)
         for i, r in enumerate(formal, 1):
             r["rank"] = i
-        observed = sorted([r for r in items if not r[f"{kind}_eligible"] and not r.get("archived") and not r.get("is_fork")], key=lambda r: (-r["stars"], r["id"]))
         if not run_id:
             annotate_summaries(db, formal[:limit], "project")
             annotate_summaries(db, observed[:limit], "project")

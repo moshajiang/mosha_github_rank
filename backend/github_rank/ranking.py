@@ -150,6 +150,20 @@ def compute_rankings(db, window=7, as_of=None):
     }
 
 
+def split_rankings(items, kind):
+    score = "potential_score" if kind == "potential" else "delta_stars"
+    eligibility = f"{kind}_eligible"
+    formal = sorted(
+        (repo for repo in items if repo[eligibility]),
+        key=lambda repo: (-repo[score], -(repo["delta_forks"] or 0), repo["id"]),
+    )
+    observing = sorted(
+        (repo for repo in items if not repo[eligibility] and not repo.get("archived") and not repo.get("is_fork")),
+        key=lambda repo: (-repo["stars"], repo["id"]),
+    )
+    return formal, observing
+
+
 def publish_rankings(db):
     now = utcnow()
     outputs = []
